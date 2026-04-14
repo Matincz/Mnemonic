@@ -1,0 +1,12 @@
+[
+  {
+    "sessionId": "test-opencode-session",
+    "title": "Database Migration",
+    "directory": "/Users/test/my-app",
+    "timeCreated": 1773376399000,
+    "messages": [
+      { "role": "user", "content": "Help me write a database migration", "timeCreated": 1773376399000 },
+      { "role": "assistant", "content": "Create a migration file using drizzle-kit generate. Then run drizzle-kit push to apply it.", "timeCreated": 1773376404000 }
+    ]
+  }
+]

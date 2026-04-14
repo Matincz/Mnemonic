@@ -2,5 +2,13 @@
 import React from "react";
 import { render } from "ink";
 import { App } from "./app";
+import { prepareRuntime } from "../migration";
 
-render(<App />);
+export function runTui() {
+  prepareRuntime();
+  render(<App />);
+}
+
+if (import.meta.main) {
+  runTui();
+}

@@ -1,0 +1,29 @@
+{
+  "sessionId": "test-gemini-session",
+  "projectHash": "abc123",
+  "startTime": "2026-04-12T08:00:00.000Z",
+  "lastUpdated": "2026-04-12T08:05:00.000Z",
+  "messages": [
+    {
+      "id": "msg-1",
+      "timestamp": "2026-04-12T08:00:00.000Z",
+      "type": "user",
+      "content": [{ "text": "Explain the singleton pattern" }]
+    },
+    {
+      "id": "msg-2",
+      "timestamp": "2026-04-12T08:00:05.000Z",
+      "type": "gemini",
+      "content": "The singleton pattern ensures a class has only one instance. Use a static getInstance() method that creates the instance on first call and returns it on subsequent calls.",
+      "thoughts": [
+        {
+          "subject": "Design Patterns",
+          "description": "Explaining singleton with practical guidance",
+          "timestamp": "2026-04-12T08:00:04.000Z"
+        }
+      ],
+      "model": "gemini-2.5-flash"
+    }
+  ],
+  "kind": "main"
+}

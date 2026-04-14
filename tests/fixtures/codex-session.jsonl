@@ -1,0 +1,4 @@
+{"timestamp":"2026-04-13T03:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"How do I configure the database?"}]}}
+{"timestamp":"2026-04-13T03:00:05.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"You can configure the database by editing config/database.yml. Set the adapter to postgresql and provide the connection URL."}]}}
+{"timestamp":"2026-04-13T03:00:10.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"What about connection pooling?"}]}}
+{"timestamp":"2026-04-13T03:00:15.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Add pool: 10 and timeout: 5000 to the database config. For production, consider pgbouncer for external pooling."}]}}

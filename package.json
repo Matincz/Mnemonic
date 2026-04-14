@@ -1,11 +1,17 @@
 {
-  "name": "memory-agent",
+  "name": "mnemonic",
   "version": "0.1.0",
   "type": "module",
+  "bin": {
+    "mnemonic": "./bin/mnemonic"
+  },
   "scripts": {
-    "dev": "bun run --watch src/index.ts",
-    "start": "bun run src/index.ts",
-    "tui": "bun run src/tui/index.tsx",
+    "dev": "bun run --watch src/cli.ts start",
+    "start": "bun run src/cli.ts start",
+    "tui": "bun run src/cli.ts tui",
+    "setup": "bun run src/cli.ts setup",
+    "auth": "bun run src/cli.ts setup",
+    "paths": "bun run src/cli.ts paths",
     "test": "bun test"
   },
   "dependencies": {
