@@ -9,7 +9,6 @@ Add terminal-interactive ChatGPT Plus/Pro authentication to this project using a
 - Add a non-official OpenAI OAuth/device-auth path for ChatGPT Plus/Pro accounts.
 - Keep manual API key configuration working.
 - Route LLM chat requests through the ChatGPT/Codex endpoint when OAuth auth is active.
-- Keep embeddings on the existing API-key/OpenAI-compatible path.
 
 ## Authentication Modes
 
@@ -30,13 +29,11 @@ Settings will support two modes:
 - `apiKey`
 - `baseURL`
 - `model`
-- `embeddingModel`
 
 Shared settings also keep:
 
 - `authMode`
 - `model`
-- `embeddingModel`
 
 ## CLI / TUI Entry
 
@@ -49,7 +46,7 @@ Flow:
    - `ChatGPT Plus/Pro (headless)`
    - `Manual API Key`
 2. Complete the selected auth flow.
-3. Configure model and embedding model.
+3. Configure the chat model.
 4. Validate configuration where practical.
 
 ## Request Routing
@@ -65,8 +62,6 @@ For `authMode = oauth`:
 For `authMode = api`:
 
 - Keep using the current OpenAI-compatible SDK client and configured `baseURL`.
-
-Embeddings always remain on the API-key path. If the user selects OAuth-only auth and no API key is configured, embedding calls should fail with a clear message explaining that embeddings still require API credentials.
 
 ## Safety / Compatibility
 

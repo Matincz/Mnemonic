@@ -49,7 +49,6 @@ User-level storage:
 Within the data root:
 
 - `data/memory.db`
-- `data/lance/`
 - `vault/`
 
 Within the config root:
@@ -105,8 +104,6 @@ Chat requests:
 
 - OAuth mode -> ChatGPT/Codex compatibility endpoint
 - API key mode -> OpenAI-compatible API
-
-Embeddings remain API-key-only for now.
 
 ## Validation
 
