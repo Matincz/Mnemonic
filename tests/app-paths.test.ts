@@ -14,8 +14,27 @@ describe("app paths", () => {
     expect(paths.dataRoot).toBe("/Users/tester/Library/Application Support/Mnemonic");
     expect(paths.configRoot).toBe("/Users/tester/Library/Preferences/Mnemonic");
     expect(paths.sqlitePath).toBe("/Users/tester/Library/Application Support/Mnemonic/data/memory.db");
+    expect(paths.lanceDir).toBe("/Users/tester/Library/Application Support/Mnemonic/data/lance");
     expect(paths.vaultPath).toBe("/Users/tester/Library/Application Support/Mnemonic/vault");
     expect(paths.legacyRoot).toBe("/Users/tester/Desktop/Memory agent");
+    expect(Object.keys(paths).sort()).toEqual([
+      "appName",
+      "configRoot",
+      "dataDir",
+      "dataRoot",
+      "ipcDir",
+      "ipcEventsPath",
+      "ipcStatusPath",
+      "lanceDir",
+      "legacyDataDir",
+      "legacyRoot",
+      "legacySettingsPath",
+      "legacyVaultPath",
+      "migrationMarkerPath",
+      "settingsPath",
+      "sqlitePath",
+      "vaultPath",
+    ]);
   });
 
   it("resolves Linux XDG Mnemonic directories", async () => {

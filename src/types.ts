@@ -19,6 +19,12 @@ export interface SessionMessage {
   timestamp?: Date;
 }
 
+export interface MemorySearchResult {
+  memory: Memory;
+  score: number;
+  reasons: string[];
+}
+
 export const MemorySchema = z.object({
   id: z.string(),
   layer: z.enum(["episodic", "semantic", "procedural", "insight"]),
@@ -30,6 +36,10 @@ export const MemorySchema = z.object({
   sourceSessionId: z.string(),
   sourceAgent: z.enum(["codex", "claude-code", "gemini", "opencode", "openclaw", "amp"]),
   createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  status: z.enum(["proposed", "observed", "verified", "superseded"]),
+  sourceSessionIds: z.array(z.string()),
+  supportingMemoryIds: z.array(z.string()),
   salience: z.number().min(0).max(1),
   linkedMemoryIds: z.array(z.string()),
   contradicts: z.array(z.string()),
@@ -52,6 +62,8 @@ export interface PipelineResult {
   memories: Memory[];
   skipped: boolean;
   reason?: string;
+  wikiOps?: Array<{ action: string; type: string; slug: string; title: string; reason: string }>;
+  warnings?: string[];
 }
 
 export interface ProcessedFile {

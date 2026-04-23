@@ -2,8 +2,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { MemoryDB } from "../../src/storage/sqlite";
 import { join } from "path";
-import { unlinkSync, existsSync } from "fs";
+import { unlinkSync, existsSync, mkdtempSync, rmSync } from "fs";
 import type { Memory } from "../../src/types";
+import { tmpdir } from "os";
 
 const TEST_DB = join(import.meta.dir, "test-memory.db");
 
@@ -33,6 +34,10 @@ describe("MemoryDB", () => {
     sourceSessionId: "codex-abc123",
     sourceAgent: "codex",
     createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    status: "observed",
+    sourceSessionIds: ["codex-abc123"],
+    supportingMemoryIds: [],
     salience: 0.8,
     linkedMemoryIds: [],
     contradicts: [],
@@ -69,4 +74,53 @@ describe("MemoryDB", () => {
     const episodic = db.listByLayer("episodic");
     expect(episodic).toHaveLength(2);
   });
+
+  it("stores and loads pipeline checkpoints", () => {
+    db.saveCheckpoint("session-1", "ingesting", [{ id: "mem-1" }]);
+    expect(db.loadCheckpoint<Array<{ id: string }>>("session-1", "ingesting")).toEqual([{ id: "mem-1" }]);
+
+    db.clearCheckpoints("session-1");
+    expect(db.loadCheckpoint("session-1", "ingesting")).toBeNull();
+  });
+
+  it("rolls back failed transactions", () => {
+    expect(() =>
+      db.withTransaction(() => {
+        db.upsertMemory(makeMemory({ id: "tx-1" }));
+        throw new Error("boom");
+      }),
+    ).toThrow("boom");
+
+    expect(db.getMemory("tx-1")).toBeNull();
+  });
+
+  it("replaces memory rows without clearing processed files or checkpoints", () => {
+    db.upsertMemory(makeMemory({ id: "old-1" }));
+    db.markFileProcessed("/path/to/file", "hash123", "session-1");
+    db.saveCheckpoint("session-1", "ingesting", [{ id: "old-1" }]);
+
+    db.replaceAllMemories([
+      makeMemory({
+        id: "new-1",
+        title: "Rebuilt memory set",
+      }),
+    ]);
+
+    expect(db.getMemory("old-1")).toBeNull();
+    expect(db.getMemory("new-1")?.title).toBe("Rebuilt memory set");
+    expect(db.isFileProcessed("/path/to/file", "hash123")).toBe(true);
+    expect(db.loadCheckpoint<Array<{ id: string }>>("session-1", "ingesting")).toEqual([{ id: "old-1" }]);
+  });
+
+  it("creates the database parent directory when missing", () => {
+    const root = mkdtempSync(join(tmpdir(), "mnemonic-sqlite-"));
+    const nestedDbPath = join(root, "nested", "memory.db");
+
+    const nestedDb = new MemoryDB(nestedDbPath);
+    nestedDb.close();
+
+    expect(existsSync(nestedDbPath)).toBe(true);
+    rmSync(root, { recursive: true, force: true });
+  });
+
 });

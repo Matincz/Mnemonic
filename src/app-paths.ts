@@ -12,10 +12,13 @@ export interface AppPaths {
   dataRoot: string;
   configRoot: string;
   dataDir: string;
+  lanceDir: string;
   vaultPath: string;
   sqlitePath: string;
-  lanceDir: string;
   settingsPath: string;
+  ipcDir: string;
+  ipcStatusPath: string;
+  ipcEventsPath: string;
   migrationMarkerPath: string;
   legacyRoot: string;
   legacyDataDir: string;
@@ -48,16 +51,20 @@ export function resolveAppPaths(input: AppPathsInput = {}): AppPaths {
 
   const legacyRoot = env.MNEMONIC_LEGACY_ROOT ?? join(homeDir, "Desktop", "Memory agent");
   const dataDir = join(dataRoot, "data");
+  const ipcDir = join(dataRoot, "ipc");
 
   return {
     appName: "Mnemonic",
     dataRoot,
     configRoot,
     dataDir,
+    lanceDir: join(dataDir, "lance"),
     vaultPath: join(dataRoot, "vault"),
     sqlitePath: join(dataDir, "memory.db"),
-    lanceDir: join(dataDir, "lance"),
     settingsPath: join(configRoot, "settings.json"),
+    ipcDir,
+    ipcStatusPath: join(ipcDir, "status.json"),
+    ipcEventsPath: join(ipcDir, "events.ndjson"),
     migrationMarkerPath: join(configRoot, ".migration-complete"),
     legacyRoot,
     legacyDataDir: join(legacyRoot, "data"),
