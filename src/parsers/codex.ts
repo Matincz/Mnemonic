@@ -1,9 +1,8 @@
-// src/parsers/codex.ts
-import { readFile } from "fs/promises";
 import { basename } from "path";
-import { config } from "../config";
+import { loadConfig } from "../config";
 import type { ParsedSession, SessionMessage } from "../types";
 import type { SessionParser } from "./base";
+import { readJsonLines } from "./jsonl";
 
 interface CodexEntry {
   timestamp: string;
@@ -18,20 +17,14 @@ interface CodexEntry {
 export class CodexParser implements SessionParser {
   name = "codex";
 
+  constructor(private root = loadConfig().sources.codex) {}
+
   async parse(filePath: string): Promise<ParsedSession | null> {
-    const raw = await readFile(filePath, "utf-8");
-    const lines = raw.trim().split("\n").filter(Boolean);
+    const entries = await readJsonLines<CodexEntry>(filePath);
     const messages: SessionMessage[] = [];
     let firstTimestamp: Date | null = null;
 
-    for (const line of lines) {
-      let entry: CodexEntry;
-      try {
-        entry = JSON.parse(line);
-      } catch {
-        continue;
-      }
-
+    for (const entry of entries) {
       if (entry.type !== "response_item") continue;
       const payload = entry.payload;
       if (!payload?.role || !payload.content) continue;
@@ -69,6 +62,6 @@ export class CodexParser implements SessionParser {
   }
 
   watchPaths(): string[] {
-    return [config.sources.codex];
+    return [this.root];
   }
 }

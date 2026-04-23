@@ -1,7 +1,7 @@
 // src/parsers/gemini.ts
 import { readFile } from "fs/promises";
 import { basename, dirname } from "path";
-import { config } from "../config";
+import { loadConfig } from "../config";
 import type { ParsedSession, SessionMessage } from "../types";
 import type { SessionParser } from "./base";
 
@@ -20,6 +20,8 @@ interface GeminiSession {
 
 export class GeminiParser implements SessionParser {
   name = "gemini";
+
+  constructor(private root = loadConfig().sources.gemini) {}
 
   async parse(filePath: string): Promise<ParsedSession | null> {
     const raw = await readFile(filePath, "utf-8");
@@ -60,6 +62,6 @@ export class GeminiParser implements SessionParser {
   }
 
   watchPaths(): string[] {
-    return [config.sources.gemini];
+    return [this.root];
   }
 }

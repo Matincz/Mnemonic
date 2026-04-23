@@ -1,7 +1,7 @@
 // src/parsers/opencode.ts
-import Database from "better-sqlite3";
+import { Database } from "bun:sqlite";
 import { basename } from "path";
-import { config } from "../config";
+import { loadConfig } from "../config";
 import type { ParsedSession, SessionMessage } from "../types";
 import type { SessionParser } from "./base";
 
@@ -13,30 +13,42 @@ interface RawOpenCodeSession {
   messages: Array<{ role: string; content: string; timeCreated: number }>;
 }
 
+export interface OpenCodeReadOptions {
+  maxAgeDays?: number | null;
+}
+
 export class OpenCodeParser implements SessionParser {
   name = "opencode";
+
+  constructor(
+    private dbSourcePath = loadConfig().sources.opencode,
+    private maxAgeDays = loadConfig().maxSessionAgeDays,
+  ) {}
 
   /** Parse directly from the SQLite database */
   async parse(dbPath: string): Promise<ParsedSession | null> {
     // For OpenCode we return the most recent session
-    const sessions = this.readFromDb(dbPath);
+    const sessions = this.readFromDb(dbPath, { maxAgeDays: this.maxAgeDays });
     return sessions[0] ?? null;
   }
 
   /** Read all recent sessions from the database */
-  readFromDb(dbPath: string): ParsedSession[] {
+  readFromDb(dbPath: string, options: OpenCodeReadOptions = {}): ParsedSession[] {
     const db = new Database(dbPath, { readonly: true });
     try {
-      const cutoff = Date.now() - config.maxSessionAgeDays * 86400_000;
+      const hasAgeLimit = options.maxAgeDays !== null && options.maxAgeDays !== undefined;
+      const maxAgeDays = hasAgeLimit ? options.maxAgeDays! : null;
+      const cutoff = maxAgeDays !== null ? Date.now() - maxAgeDays * 86400_000 : null;
+      const whereClause = hasAgeLimit ? "WHERE s.time_updated > ?" : "";
 
       const rows = db.prepare(`
         SELECT s.id, s.title, s.directory, s.time_created,
                m.data, m.time_created as msg_time
         FROM session s
         JOIN message m ON m.session_id = s.id
-        WHERE s.time_updated > ?
+        ${whereClause}
         ORDER BY s.time_created DESC, m.time_created ASC
-      `).all(cutoff) as Array<{
+      `).all(...(hasAgeLimit ? [cutoff] : [])) as Array<{
         id: string; title: string; directory: string;
         time_created: number; data: string; msg_time: number;
       }>;
@@ -90,11 +102,11 @@ export class OpenCodeParser implements SessionParser {
         content: m.content,
         timestamp: new Date(m.timeCreated),
       })),
-      rawPath: config.sources.opencode,
+      rawPath: this.dbSourcePath,
     }));
   }
 
   watchPaths(): string[] {
-    return [config.sources.opencode];
+    return [this.dbSourcePath];
   }
 }

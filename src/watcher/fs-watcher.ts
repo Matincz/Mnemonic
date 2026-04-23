@@ -1,11 +1,13 @@
 import { watch, type FSWatcher } from "fs";
-import { config } from "../config";
+import { loadConfig } from "../config";
 
 export type FileChangeHandler = (path: string) => void;
 
 export class DebouncedWatcher {
   private watchers: FSWatcher[] = [];
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  constructor(private debounceMs = loadConfig().watchDebounceMs) {}
 
   watch(dir: string, handler: FileChangeHandler) {
     try {
@@ -20,7 +22,7 @@ export class DebouncedWatcher {
           setTimeout(() => {
             this.timers.delete(fullPath);
             handler(fullPath);
-          }, config.watchDebounceMs)
+          }, this.debounceMs),
         );
       });
       this.watchers.push(watcher);

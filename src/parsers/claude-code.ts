@@ -1,15 +1,15 @@
 // src/parsers/claude-code.ts
-import { readFile } from "fs/promises";
-import { basename, dirname } from "path";
-import { config } from "../config";
+import { basename } from "path";
+import { loadConfig } from "../config";
 import type { ParsedSession, SessionMessage } from "../types";
 import type { SessionParser } from "./base";
+import { readJsonLines } from "./jsonl";
 
 interface ClaudeEntry {
   type: string;
   message?: {
     role: string;
-    content: Array<{ type: string; text?: string }>;
+    content: unknown;
   };
   uuid?: string;
   timestamp?: string;
@@ -20,28 +20,20 @@ interface ClaudeEntry {
 export class ClaudeCodeParser implements SessionParser {
   name = "claude-code";
 
+  constructor(private root = loadConfig().sources.claudeCode) {}
+
   async parse(filePath: string): Promise<ParsedSession | null> {
-    const raw = await readFile(filePath, "utf-8");
-    const lines = raw.trim().split("\n").filter(Boolean);
+    const entries = await readJsonLines<ClaudeEntry>(filePath);
     const messages: SessionMessage[] = [];
     let firstTimestamp: Date | null = null;
     let project: string | undefined;
 
-    for (const line of lines) {
-      let entry: ClaudeEntry;
-      try {
-        entry = JSON.parse(line);
-      } catch {
-        continue;
-      }
-
+    for (const entry of entries) {
       // Only process user/assistant message entries
       if (entry.type !== "user" && entry.type !== "assistant") continue;
       if (!entry.message?.content) continue;
 
-      const textParts = entry.message.content
-        .filter((c) => c.type === "text" && c.text)
-        .map((c) => c.text!);
+      const textParts = extractTextParts(entry.message.content);
       if (textParts.length === 0) continue;
 
       const role = entry.message.role as SessionMessage["role"];
@@ -70,6 +62,42 @@ export class ClaudeCodeParser implements SessionParser {
   }
 
   watchPaths(): string[] {
-    return [config.sources.claudeCode];
+    return [this.root];
   }
+}
+
+function extractTextParts(content: unknown): string[] {
+  if (typeof content === "string") {
+    return content.trim() ? [content] : [];
+  }
+
+  if (Array.isArray(content)) {
+    return content
+      .flatMap((item) => {
+        if (typeof item === "string") {
+          return item.trim() ? [item] : [];
+        }
+
+        if (typeof item === "object" && item !== null) {
+          const record = item as Record<string, unknown>;
+          if (record.type === "text" && typeof record.text === "string" && record.text.trim()) {
+            return [record.text];
+          }
+          if (typeof record.text === "string" && record.text.trim()) {
+            return [record.text];
+          }
+        }
+
+        return [];
+      });
+  }
+
+  if (typeof content === "object" && content !== null) {
+    const record = content as Record<string, unknown>;
+    if (typeof record.text === "string" && record.text.trim()) {
+      return [record.text];
+    }
+  }
+
+  return [];
 }

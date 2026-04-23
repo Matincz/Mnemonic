@@ -407,27 +407,37 @@ export function getCodexApiEndpoint(): string {
   return CODEX_API_ENDPOINT;
 }
 
-export function extractResponseText(payload: any): string {
-  if (typeof payload?.output_text === "string" && payload.output_text.length > 0) {
-    return payload.output_text;
+export async function extractResponseText(response: Response): Promise<string> {
+  if (!response.body) {
+    throw new Error("Response body is empty");
   }
 
-  if (Array.isArray(payload?.output)) {
-    const parts: string[] = [];
-    for (const item of payload.output) {
-      if (!item || typeof item !== "object") continue;
-      if (!Array.isArray(item.content)) continue;
-      for (const content of item.content) {
-        if (!content || typeof content !== "object") continue;
-        if (typeof content.text === "string") {
-          parts.push(content.text);
-        } else if (typeof content.output_text === "string") {
-          parts.push(content.output_text);
+  let text = "";
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  for await (const chunk of response.body) {
+    buffer += decoder.decode(chunk, { stream: true });
+    let newlineIndex: number;
+
+    while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+
+      if (line.startsWith("data: ") && line !== "data: [DONE]") {
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.type === "response.output_text.delta" && typeof data.delta === "string") {
+            text += data.delta;
+          }
+        } catch {
+          // Ignore incomplete or invalid JSON in SSE
         }
       }
     }
-    if (parts.length > 0) return parts.join("\n").trim();
   }
+
+  if (text.length > 0) return text.trim();
 
   throw new Error("OpenAI OAuth response did not contain text output");
 }

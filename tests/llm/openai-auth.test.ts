@@ -58,7 +58,6 @@ describe("openai oauth auth helpers", () => {
       expiresAt: Date.now() - 1,
       accountId: "acct_123",
       model: "gpt-5.4",
-      embeddingModel: "text-embedding-3-small",
     });
 
     expect(refreshed.accessToken).toBe("new-access");

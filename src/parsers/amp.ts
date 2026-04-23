@@ -1,19 +1,26 @@
 // src/parsers/amp.ts
+import { existsSync } from "fs";
+import { homedir } from "os";
 import type { ParsedSession, SessionMessage } from "../types";
 import type { SessionParser } from "./base";
 
 export class AmpParser implements SessionParser {
   name = "amp";
 
+  constructor(private ampBinary = resolveAmpBinary()) {}
+
   /** Parse by calling `amp threads markdown <id>` */
   async parse(threadId: string): Promise<ParsedSession | null> {
     try {
-      const proc = Bun.spawn(["amp", "threads", "markdown", threadId, "--no-color"], {
+      const proc = Bun.spawn([this.ampBinary, "threads", "markdown", threadId, "--no-color"], {
         stdout: "pipe",
         stderr: "pipe",
       });
       const output = await new Response(proc.stdout).text();
-      await proc.exited;
+      const exitCode = await proc.exited;
+      if (exitCode !== 0) {
+        return null;
+      }
       if (!output.trim()) return null;
       return this.parseMarkdown(output, threadId);
     } catch {
@@ -68,12 +75,15 @@ export class AmpParser implements SessionParser {
   /** List recent thread IDs */
   async listRecentThreads(): Promise<string[]> {
     try {
-      const proc = Bun.spawn(["amp", "threads", "list", "--no-color"], {
+      const proc = Bun.spawn([this.ampBinary, "threads", "list", "--no-color"], {
         stdout: "pipe",
         stderr: "pipe",
       });
       const output = await new Response(proc.stdout).text();
-      await proc.exited;
+      const exitCode = await proc.exited;
+      if (exitCode !== 0) {
+        return [];
+      }
       const ids: string[] = [];
       for (const line of output.split("\n")) {
         const match = line.match(/(T-[0-9a-f-]+)/);
@@ -84,4 +94,27 @@ export class AmpParser implements SessionParser {
       return [];
     }
   }
+}
+
+function resolveAmpBinary(): string {
+  const envBinary = process.env.AMP_BIN?.trim();
+  if (envBinary && existsSync(envBinary)) {
+    return envBinary;
+  }
+
+  const home = homedir();
+  const candidates = [
+    `${home}/.local/bin/amp`,
+    `${home}/.amp/bin/amp`,
+    "/opt/homebrew/bin/amp",
+    "/usr/local/bin/amp",
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return "amp";
 }
