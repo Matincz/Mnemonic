@@ -65,6 +65,19 @@ export function Detail({ memory }: DetailProps) {
             </Box>
           </Box>
         )}
+
+        {memory.contradicts.length > 0 && (
+          <Box marginTop={1} flexDirection="column">
+            <Text color="red" bold>Contradictions: </Text>
+            <Box flexDirection="row" flexWrap="wrap">
+              {memory.contradicts.map((id) => (
+                <Box key={id} marginRight={1}>
+                  <Text color="red">! {id.slice(0, 8)}</Text>
+                </Box>
+              ))}
+            </Box>
+          </Box>
+        )}
       </Box>
     </Box>
   );

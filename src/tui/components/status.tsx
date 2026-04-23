@@ -1,18 +1,23 @@
 // src/tui/components/header.tsx
 import React from "react";
 import { Box, Text } from "ink";
+import type { RuntimeEvent, RuntimeStatus } from "../../ipc/runtime";
 
 interface HeaderProps {
   view: string;
   memoryCount: number;
-  watcherStatus: "active" | "idle" | "error";
+  runtime: RuntimeStatus;
+  latestEvent?: RuntimeEvent;
 }
 
-export function Header({ view, memoryCount, watcherStatus }: HeaderProps) {
+export function Header({ view, memoryCount, runtime, latestEvent }: HeaderProps) {
   const statusColors = {
-    active: "green",
+    watching: "green",
+    backfill: "yellow",
+    starting: "yellow",
     idle: "yellow",
     error: "red",
+    stopped: "grey",
   };
 
   return (
@@ -23,11 +28,13 @@ export function Header({ view, memoryCount, watcherStatus }: HeaderProps) {
           <Text color="cyan" bold> AGENT</Text>
         </Box>
         <Box>
-          <Text dimColor>watcher: </Text>
-          <Text color={statusColors[watcherStatus]} bold>● {watcherStatus}</Text>
+          <Text dimColor>daemon: </Text>
+          <Text color={statusColors[runtime.state]} bold>● {runtime.state}</Text>
           <Text dimColor> | </Text>
           <Text color="blue" bold>{memoryCount}</Text>
           <Text dimColor> items</Text>
+          <Text dimColor> | processed </Text>
+          <Text color="cyan" bold>{runtime.processedSessions}</Text>
         </Box>
       </Box>
       <Box paddingX={1} marginTop={-1}>
@@ -35,6 +42,9 @@ export function Header({ view, memoryCount, watcherStatus }: HeaderProps) {
           <Text bold>MODE: </Text>
           <Text color="yellow">{view.toUpperCase()}</Text>
         </Box>
+      </Box>
+      <Box paddingX={1}>
+        <Text dimColor>{latestEvent?.message ?? runtime.message}</Text>
       </Box>
     </Box>
   );

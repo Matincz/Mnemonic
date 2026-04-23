@@ -7,10 +7,25 @@ import {
   type OAuthLoginResult,
 } from "../llm/openai-auth";
 import { prepareRuntime } from "../migration";
-import { loadSettings, saveSettings, type ApiSettings, type OAuthSettings, type Settings } from "../settings";
+import {
+  loadSettings,
+  saveSettings,
+  type ApiSettings,
+  type EmbeddingSettings,
+  type OAuthSettings,
+  type Settings,
+} from "../settings";
 
 type AuthMethod = "oauth-browser" | "oauth-headless" | "api";
-type FieldKey = "apiKey" | "baseURL" | "model" | "embeddingModel";
+type EmbeddingProvider = "api" | "local" | "jina";
+type FieldKey =
+  | "apiKey"
+  | "baseURL"
+  | "model"
+  | "embeddingProvider"
+  | "embeddingApiKey"
+  | "embeddingBaseURL"
+  | "embeddingModel";
 type Phase = "authSelect" | "authenticating" | "input" | "confirm" | "testing" | "result";
 
 interface StepConfig {
@@ -44,48 +59,111 @@ const API_STEPS: StepConfig[] = [
   { key: "apiKey", label: "API Key", defaultValue: "", masked: true, hint: "Required" },
   { key: "baseURL", label: "Base URL", defaultValue: "https://api.openai.com/v1", masked: false },
   { key: "model", label: "Chat Model", defaultValue: "gpt-4.1-mini", masked: false },
-  { key: "embeddingModel", label: "Embedding Model", defaultValue: "text-embedding-3-small", masked: false },
 ];
 
 const OAUTH_STEPS: StepConfig[] = [
   { key: "model", label: "Chat Model", defaultValue: "gpt-5.4-mini", masked: false },
-  { key: "embeddingModel", label: "Embedding Model", defaultValue: "text-embedding-3-small", masked: false },
-  {
-    key: "apiKey",
-    label: "Embedding API Key",
-    defaultValue: "",
-    masked: true,
-    optional: true,
-    hint: "Optional. Needed if you want OpenAI embeddings.",
-  },
-  {
-    key: "baseURL",
-    label: "Embedding Base URL",
-    defaultValue: "https://api.openai.com/v1",
-    masked: false,
-    optional: true,
-    hint: "Optional. Used with the embedding API key.",
-  },
 ];
 
 type FormValues = Record<FieldKey, string>;
 
+function getDefaultEmbeddingBaseURL(provider: EmbeddingProvider) {
+  if (provider === "api") return "https://api.openai.com/v1";
+  if (provider === "jina") return "https://api.jina.ai/v1";
+  return "http://127.0.0.1:11434/v1";
+}
+
+function getDefaultEmbeddingModel(provider: EmbeddingProvider) {
+  if (provider === "api") return "text-embedding-3-small";
+  if (provider === "jina") return "jina-embeddings-v3";
+  return "nomic-embed-text";
+}
+
+function normalizeEmbeddingProvider(value: string): EmbeddingProvider {
+  if (value === "api" || value === "local" || value === "jina") {
+    return value;
+  }
+
+  return "local";
+}
+
+function getEmbeddingSteps(provider: EmbeddingProvider): StepConfig[] {
+  const steps: StepConfig[] = [
+    {
+      key: "embeddingProvider",
+      label: "Embedding Provider",
+      defaultValue: provider,
+      masked: false,
+      hint: "Supported values: api, local, jina",
+    },
+  ];
+
+  if (provider !== "local") {
+    steps.push({
+      key: "embeddingApiKey",
+      label: "Embedding API Key",
+      defaultValue: "",
+      masked: true,
+      hint: provider === "jina" ? "Required for Jina embeddings" : "Required for the embedding API",
+    });
+  }
+
+  steps.push(
+    {
+      key: "embeddingBaseURL",
+      label: "Embedding Base URL",
+      defaultValue: getDefaultEmbeddingBaseURL(provider),
+      masked: false,
+    },
+    {
+      key: "embeddingModel",
+      label: "Embedding Model",
+      defaultValue: getDefaultEmbeddingModel(provider),
+      masked: false,
+    },
+  );
+
+  return steps;
+}
+
+function getStepsForState(authMethod: AuthMethod | null, values: FormValues): StepConfig[] {
+  const authSteps = authMethod === "api" ? API_STEPS : authMethod ? OAUTH_STEPS : [];
+  const provider = normalizeEmbeddingProvider(values.embeddingProvider);
+  return [...authSteps, ...getEmbeddingSteps(provider)];
+}
+
 function getInitialValues(existing: Settings | null): FormValues {
+  const embeddingProvider = existing?.embedding?.provider ?? "local";
+  const embeddingBaseURL = existing?.embedding?.baseURL ?? getDefaultEmbeddingBaseURL(embeddingProvider);
+  const embeddingModel = existing?.embedding?.model ?? getDefaultEmbeddingModel(embeddingProvider);
+  const embeddingApiKey =
+    existing?.embedding && "apiKey" in existing.embedding
+      ? existing.embedding.apiKey
+      : existing?.authMode === "api"
+        ? existing.apiKey
+        : "";
+
   if (existing?.authMode === "api") {
     return {
       apiKey: existing.apiKey,
       baseURL: existing.baseURL,
       model: existing.model,
-      embeddingModel: existing.embeddingModel,
+      embeddingProvider,
+      embeddingApiKey,
+      embeddingBaseURL,
+      embeddingModel,
     };
   }
 
   if (existing?.authMode === "oauth") {
     return {
-      apiKey: existing.apiKey ?? "",
-      baseURL: existing.baseURL ?? "https://api.openai.com/v1",
+      apiKey: "",
+      baseURL: "https://api.openai.com/v1",
       model: existing.model,
-      embeddingModel: existing.embeddingModel,
+      embeddingProvider,
+      embeddingApiKey,
+      embeddingBaseURL,
+      embeddingModel,
     };
   }
 
@@ -93,7 +171,29 @@ function getInitialValues(existing: Settings | null): FormValues {
     apiKey: "",
     baseURL: "https://api.openai.com/v1",
     model: "gpt-4.1-mini",
-    embeddingModel: "text-embedding-3-small",
+    embeddingProvider,
+    embeddingApiKey,
+    embeddingBaseURL,
+    embeddingModel,
+  };
+}
+
+function buildEmbeddingSettings(values: FormValues): EmbeddingSettings {
+  const provider = normalizeEmbeddingProvider(values.embeddingProvider);
+
+  if (provider === "local") {
+    return {
+      provider,
+      baseURL: values.embeddingBaseURL || getDefaultEmbeddingBaseURL(provider),
+      model: values.embeddingModel || getDefaultEmbeddingModel(provider),
+    };
+  }
+
+  return {
+    provider,
+    apiKey: values.embeddingApiKey,
+    baseURL: values.embeddingBaseURL || getDefaultEmbeddingBaseURL(provider),
+    model: values.embeddingModel || getDefaultEmbeddingModel(provider),
   };
 }
 
@@ -102,13 +202,15 @@ function buildSettings(
   values: FormValues,
   oauth: OAuthLoginResult | null,
 ): Settings {
+  const embedding = buildEmbeddingSettings(values);
+
   if (method === "api") {
     const settings: ApiSettings = {
       authMode: "api",
       apiKey: values.apiKey,
       baseURL: values.baseURL || "https://api.openai.com/v1",
       model: values.model || "gpt-4.1-mini",
-      embeddingModel: values.embeddingModel || "text-embedding-3-small",
+      embedding,
     };
     return settings;
   }
@@ -124,9 +226,7 @@ function buildSettings(
     expiresAt: oauth.expiresAt,
     accountId: oauth.accountId,
     model: values.model || "gpt-5.4-mini",
-    embeddingModel: values.embeddingModel || "text-embedding-3-small",
-    apiKey: values.apiKey || undefined,
-    baseURL: values.baseURL || "https://api.openai.com/v1",
+    embedding,
   };
 
   return settings;
@@ -156,6 +256,60 @@ async function testApiConnection(settings: ApiSettings): Promise<{ ok: boolean; 
   }
 }
 
+async function testEmbeddingConnection(settings: EmbeddingSettings): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    if ("apiKey" in settings && settings.apiKey) {
+      headers.Authorization = `Bearer ${settings.apiKey}`;
+    }
+
+    const url = `${settings.baseURL.replace(/\/+$/, "")}/embeddings`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: settings.model,
+        input: "Mnemonic embedding probe",
+      }),
+    });
+
+    if (res.ok) {
+      return { ok: true };
+    }
+
+    const body = await res.json().catch(() => ({}));
+    const msg = (body as any)?.error?.message ?? `HTTP ${res.status}`;
+    return { ok: false, error: msg };
+  } catch (err: any) {
+    return { ok: false, error: err.message ?? String(err) };
+  }
+}
+
+async function testSetupConfiguration(settings: Settings): Promise<{ ok: boolean; error?: string }> {
+  if (settings.authMode === "api") {
+    const chatResult = await testApiConnection(settings);
+    if (!chatResult.ok) {
+      return {
+        ok: false,
+        error: `Chat API test failed: ${chatResult.error}`,
+      };
+    }
+  }
+
+  const embeddingResult = await testEmbeddingConnection(settings.embedding!);
+  if (!embeddingResult.ok) {
+    return {
+      ok: false,
+      error: `Embedding API test failed: ${embeddingResult.error}`,
+    };
+  }
+
+  return { ok: true };
+}
+
 function Setup() {
   const { exit } = useApp();
   const existing = loadSettings();
@@ -181,12 +335,7 @@ function Setup() {
   const [authMessage, setAuthMessage] = useState<string>("Waiting to start authentication...");
   const [testResult, setTestResult] = useState<{ ok: boolean; error?: string } | null>(null);
 
-  const steps = useMemo(() => {
-    if (authMethod === "api") return API_STEPS;
-    if (authMethod === "oauth-browser" || authMethod === "oauth-headless") return OAUTH_STEPS;
-    return [];
-  }, [authMethod]);
-
+  const steps = useMemo(() => getStepsForState(authMethod, values), [authMethod, values]);
   const step = steps[stepIndex];
 
   useEffect(() => {
@@ -199,7 +348,11 @@ function Setup() {
         const oauth =
           authMethod === "oauth-browser"
             ? await authenticateWithOpenAIBrowser((url) => {
-                if (!cancelled) setAuthMessage(`Open this URL in your browser if it did not launch automatically:\n${url}`);
+                if (!cancelled) {
+                  setAuthMessage(
+                    `Open this URL in your browser if it did not launch automatically:\n${url}`,
+                  );
+                }
               })
             : await authenticateWithOpenAIHeadless((prompt) => {
                 if (!cancelled) {
@@ -210,7 +363,8 @@ function Setup() {
         if (cancelled) return;
         setOAuthResult(oauth);
         setStepIndex(0);
-        setCurrentInput(values[OAUTH_STEPS[0].key] || OAUTH_STEPS[0].defaultValue);
+        const firstStep = getStepsForState(authMethod, values)[0] ?? OAUTH_STEPS[0];
+        setCurrentInput(values[firstStep.key] || firstStep.defaultValue);
         setPhase("input");
       } catch (err: any) {
         if (cancelled) return;
@@ -222,14 +376,14 @@ function Setup() {
     return () => {
       cancelled = true;
     };
-  }, [phase, authMethod]);
+  }, [phase, authMethod, values]);
 
   useEffect(() => {
-    if (phase !== "testing" || authMethod !== "api") return;
+    if (phase !== "testing" || !authMethod) return;
     let cancelled = false;
 
-    const settings = buildSettings("api", values, null) as ApiSettings;
-    testApiConnection(settings).then((result) => {
+    const settings = buildSettings(authMethod, values, oauthResult);
+    testSetupConfiguration(settings).then((result) => {
       if (cancelled) return;
       setTestResult(result);
       if (result.ok) saveSettings(settings);
@@ -259,7 +413,8 @@ function Setup() {
         setTestResult(null);
 
         if (method === "api") {
-          setCurrentInput(values[API_STEPS[0].key] || API_STEPS[0].defaultValue);
+          const firstStep = getStepsForState(method, values)[0]!;
+          setCurrentInput(values[firstStep.key] || firstStep.defaultValue);
           setPhase("input");
         } else {
           setAuthMessage("Starting ChatGPT authentication...");
@@ -276,18 +431,7 @@ function Setup() {
     if (phase === "confirm") {
       if (input === "y" || input === "Y" || key.return) {
         if (!authMethod) return;
-        if (authMethod === "api") {
-          setPhase("testing");
-          return;
-        }
-        try {
-          saveSettings(buildSettings(authMethod, values, oauthResult));
-          setTestResult({ ok: true });
-          setPhase("result");
-        } catch (err: any) {
-          setTestResult({ ok: false, error: err?.message ?? String(err) });
-          setPhase("result");
-        }
+        setPhase("testing");
       } else if (input === "n" || input === "N") {
         setStepIndex(0);
         setCurrentInput(steps[0] ? values[steps[0].key] || steps[0].defaultValue : "");
@@ -330,12 +474,27 @@ function Setup() {
 
   const handleSubmit = (value: string) => {
     if (!step) return;
-    const finalValue = value || step.defaultValue;
+
+    const finalValue =
+      step.key === "embeddingProvider"
+        ? normalizeEmbeddingProvider(value.trim().toLowerCase())
+        : value || step.defaultValue;
     const nextValues = { ...values, [step.key]: finalValue };
+
+    if (step.key === "embeddingProvider") {
+      const provider = normalizeEmbeddingProvider(finalValue);
+      nextValues.embeddingBaseURL = getDefaultEmbeddingBaseURL(provider);
+      nextValues.embeddingModel = getDefaultEmbeddingModel(provider);
+      if (provider === "local") {
+        nextValues.embeddingApiKey = "";
+      }
+    }
+
     setValues(nextValues);
 
-    if (stepIndex < steps.length - 1) {
-      const nextStep = steps[stepIndex + 1]!;
+    const nextSteps = getStepsForState(authMethod, nextValues);
+    if (stepIndex < nextSteps.length - 1) {
+      const nextStep = nextSteps[stepIndex + 1]!;
       setStepIndex(stepIndex + 1);
       setCurrentInput(nextValues[nextStep.key] || nextStep.defaultValue);
       return;
@@ -345,6 +504,7 @@ function Setup() {
   };
 
   const selectedOption = AUTH_OPTIONS[selectedAuthIndex];
+  const embeddingProvider = normalizeEmbeddingProvider(values.embeddingProvider);
 
   if (phase === "authSelect") {
     return (
@@ -358,7 +518,11 @@ function Setup() {
         </Box>
         <Box flexDirection="column" borderStyle="single" borderColor="cyan" paddingX={1}>
           {AUTH_OPTIONS.map((option, index) => (
-            <Box key={option.key} flexDirection="column" marginBottom={index === AUTH_OPTIONS.length - 1 ? 0 : 1}>
+            <Box
+              key={option.key}
+              flexDirection="column"
+              marginBottom={index === AUTH_OPTIONS.length - 1 ? 0 : 1}
+            >
               <Text color={index === selectedAuthIndex ? "yellow" : "white"}>
                 {index === selectedAuthIndex ? "❯" : " "} {option.label}
               </Text>
@@ -382,7 +546,7 @@ function Setup() {
         <Text color="yellow">Authenticating with ChatGPT...</Text>
         <Box marginTop={1} flexDirection="column">
           {authMessage.split("\n").map((line, index) => (
-            <Text key={`${line}-${index}`} dimColor={index === 0 ? false : true}>
+            <Text key={`${line}-${index}`} dimColor={index !== 0}>
               {line}
             </Text>
           ))}
@@ -400,9 +564,17 @@ function Setup() {
         <Box borderStyle="round" borderColor="magenta" paddingX={2} marginBottom={1}>
           <Text color="magenta" bold>Mnemonic Setup</Text>
         </Box>
-        <Text color="yellow">Testing API key connection...</Text>
+        <Text color="yellow">Testing chat and embedding configuration...</Text>
         <Box marginTop={1}>
-          <Text dimColor>Model: {values.model}</Text>
+          <Text dimColor>Chat model: {values.model}</Text>
+        </Box>
+        <Box marginTop={1}>
+          <Text dimColor>Embedding provider: {embeddingProvider}</Text>
+        </Box>
+        <Box marginTop={1}>
+          <Text dimColor>
+            Embedding model: {values.embeddingModel || getDefaultEmbeddingModel(embeddingProvider)}
+          </Text>
         </Box>
       </Box>
     );
@@ -417,14 +589,12 @@ function Setup() {
           </Box>
           <Text color="green" bold>Connection and configuration saved.</Text>
           <Text dimColor>Settings file: global Mnemonic config</Text>
-          {authMethod !== "api" && !values.apiKey && (
-            <Box marginTop={1} flexDirection="column">
-              <Text color="yellow">OAuth chat is ready.</Text>
-              <Text dimColor>No embedding API key was configured. Embedding calls will fail until you add one.</Text>
-            </Box>
-          )}
+          {authMethod !== "api" && <Text color="yellow">OAuth chat is ready.</Text>}
+          <Text color="cyan">Embedding configuration is ready.</Text>
           <Box marginTop={1}>
-            <Text dimColor>Run </Text><Text bold>bun run start</Text><Text dimColor> to launch the agent.</Text>
+            <Text dimColor>Run </Text>
+            <Text bold>bun run start</Text>
+            <Text dimColor> to launch the agent.</Text>
           </Box>
         </Box>
       );
@@ -437,12 +607,22 @@ function Setup() {
         </Box>
         <Text color="red" bold>Configuration failed</Text>
         <Box marginTop={1}>
-          <Text dimColor>Error: </Text><Text color="red">{testResult.error}</Text>
+          <Text dimColor>Error: </Text>
+          <Text color="red">{testResult.error}</Text>
         </Box>
         <Box marginTop={1} flexDirection="column">
-          <Text><Text bold color="yellow">R</Text><Text dimColor> — Restart setup</Text></Text>
-          <Text><Text bold color="yellow">S</Text><Text dimColor> — Save anyway</Text></Text>
-          <Text><Text bold color="yellow">Q</Text><Text dimColor> — Quit</Text></Text>
+          <Text>
+            <Text bold color="yellow">R</Text>
+            <Text dimColor> — Restart setup</Text>
+          </Text>
+          <Text>
+            <Text bold color="yellow">S</Text>
+            <Text dimColor> — Save anyway</Text>
+          </Text>
+          <Text>
+            <Text bold color="yellow">Q</Text>
+            <Text dimColor> — Quit</Text>
+          </Text>
         </Box>
       </Box>
     );
@@ -500,28 +680,67 @@ function Setup() {
 
       {phase === "confirm" && authMethod && (
         <Box flexDirection="column">
-          <Box borderStyle="single" borderColor="cyan" flexDirection="column" paddingX={2} paddingY={1} marginBottom={1}>
-            <Text bold underline color="cyan">Configuration Summary</Text>
+          <Box
+            borderStyle="single"
+            borderColor="cyan"
+            flexDirection="column"
+            paddingX={2}
+            paddingY={1}
+            marginBottom={1}
+          >
+            <Text bold underline color="cyan">
+              Configuration Summary
+            </Text>
             <Box marginTop={1} flexDirection="column">
-              <Box><Text dimColor>Auth Mode:   </Text><Text>{AUTH_OPTIONS.find((option) => option.key === authMethod)?.label}</Text></Box>
+              <Box>
+                <Text dimColor>Auth Mode:   </Text>
+                <Text>{AUTH_OPTIONS.find((option) => option.key === authMethod)?.label}</Text>
+              </Box>
               {authMethod === "api" ? (
                 <>
-                  <Box><Text dimColor>API Key:     </Text><Text>{values.apiKey ? `${values.apiKey.slice(0, 8)}••••••••` : "(empty)"}</Text></Box>
-                  <Box><Text dimColor>Base URL:    </Text><Text>{values.baseURL}</Text></Box>
+                  <Box>
+                    <Text dimColor>API Key:     </Text>
+                    <Text>{values.apiKey ? `${values.apiKey.slice(0, 8)}••••••••` : "(empty)"}</Text>
+                  </Box>
+                  <Box>
+                    <Text dimColor>Base URL:    </Text>
+                    <Text>{values.baseURL}</Text>
+                  </Box>
                 </>
               ) : (
-                <>
-                  <Box><Text dimColor>Account ID:  </Text><Text>{oauthResult?.accountId ?? "(not provided)"}</Text></Box>
-                  <Box><Text dimColor>Embed Key:   </Text><Text>{values.apiKey ? `${values.apiKey.slice(0, 8)}••••••••` : "(not configured)"}</Text></Box>
-                  <Box><Text dimColor>Embed URL:   </Text><Text>{values.baseURL || "(default)"}</Text></Box>
-                </>
+                <Box>
+                  <Text dimColor>Account ID:  </Text>
+                  <Text>{oauthResult?.accountId ?? "(not provided)"}</Text>
+                </Box>
               )}
-              <Box><Text dimColor>Model:       </Text><Text>{values.model}</Text></Box>
-              <Box><Text dimColor>Embedding:   </Text><Text>{values.embeddingModel}</Text></Box>
+              <Box>
+                <Text dimColor>Model:       </Text>
+                <Text>{values.model}</Text>
+              </Box>
+              <Box>
+                <Text dimColor>Embedding:   </Text>
+                <Text>{embeddingProvider}</Text>
+              </Box>
+              {embeddingProvider !== "local" && (
+                <Box>
+                  <Text dimColor>Embed Key:   </Text>
+                  <Text>
+                    {values.embeddingApiKey ? `${values.embeddingApiKey.slice(0, 8)}••••••••` : "(empty)"}
+                  </Text>
+                </Box>
+              )}
+              <Box>
+                <Text dimColor>Embed URL:   </Text>
+                <Text>{values.embeddingBaseURL}</Text>
+              </Box>
+              <Box>
+                <Text dimColor>Embed Model: </Text>
+                <Text>{values.embeddingModel}</Text>
+              </Box>
             </Box>
           </Box>
           <Text bold color="yellow">
-            {authMethod === "api" ? "Save and test API connection?" : "Save configuration?"} <Text dimColor>[Y/n]</Text>
+            Save and test configuration? <Text dimColor>[Y/n]</Text>
           </Text>
         </Box>
       )}

@@ -2,15 +2,16 @@
 import React from "react";
 import { Box, Text } from "ink";
 import TextInput from "ink-text-input";
-import type { Memory } from "../../types";
+import type { MemorySearchResult } from "../../types";
 
 interface SearchProps {
   query: string;
   onQueryChange: (query: string) => void;
-  results: Memory[];
+  results: MemorySearchResult[];
+  loading: boolean;
 }
 
-export function Search({ query, onQueryChange, results }: SearchProps) {
+export function Search({ query, onQueryChange, results, loading }: SearchProps) {
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="grey" flexGrow={1} width="100%">
       <Box paddingX={1} marginTop={-1}>
@@ -24,14 +25,21 @@ export function Search({ query, onQueryChange, results }: SearchProps) {
         
         <Box marginTop={1} flexDirection="column">
           <Text bold dimColor>RESULTS ({results.length})</Text>
+          {loading && <Text color="yellow">Searching hybrid index...</Text>}
           {results.slice(0, 10).map((res) => (
-            <Box key={res.id} marginTop={0}>
+            <Box key={res.memory.id} marginTop={0} flexDirection="column">
+              <Box>
               <Text color="cyan">• </Text>
-              <Text bold>{res.title}</Text>
-              <Text dimColor> [{res.layer.toUpperCase()}]</Text>
+                <Text bold>{res.memory.title}</Text>
+                <Text dimColor> [{res.memory.layer.toUpperCase()}]</Text>
+                <Text dimColor> score={res.score.toFixed(3)}</Text>
+              </Box>
+              <Box marginLeft={2}>
+                <Text dimColor>{res.reasons.join(" + ")}</Text>
+              </Box>
             </Box>
           ))}
-          {results.length === 0 && query !== "" && (
+          {!loading && results.length === 0 && query !== "" && (
             <Text dimColor italic>No results found for "{query}"</Text>
           )}
         </Box>

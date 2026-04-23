@@ -44,8 +44,8 @@ function makeMemory(id: string, overrides: Partial<Memory> = {}): Memory {
     id,
     layer: "semantic",
     title: `Memory ${id}`,
-    summary: `Summary ${id}`,
-    details: `Details ${id}`,
+    summary: `Summary of memory ${id} with enough detail to pass quality filters in normalization`,
+    details: `Detailed description of memory ${id} providing sufficient content to exceed minimum thresholds`,
     tags: ["memory"],
     project: "mnemonic",
     sourceSessionId: "session-1",
@@ -220,18 +220,21 @@ describe("Pipeline integration", () => {
       makeMemory("thin", {
         title: "Thin memory",
         summary: "Thin memory",
-        details: "Short",
+        details: "",
       }),
       makeMemory("dup-1", {
         title: "Auth token rotation",
-        details: "Short duplicate",
+        summary: "Rotate auth tokens securely in production systems following standard practices",
+        details: "Auth token rotation short duplicate with insufficient detail",
         tags: ["auth"],
       }),
       duplicateRich,
       makeMemory("weak", {
         layer: "semantic",
         salience: 0.2,
-        details: "Short detail",
+        title: "Transient environment observation",
+        summary: "Observed timezone setting during session startup for the current workspace",
+        details: "Short detail that is meaningful but low salience for durable storage",
       }),
     ]);
 
