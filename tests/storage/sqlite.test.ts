@@ -123,4 +123,10 @@ describe("MemoryDB", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("stores and retrieves meta values", () => {
+    db.setMeta("lastMaintenanceAt", "2026-05-01T00:00:00.000Z");
+    expect(db.getMeta("lastMaintenanceAt")).toBe("2026-05-01T00:00:00.000Z");
+    expect(db.getMeta("missing")).toBeNull();
+  });
+
 });

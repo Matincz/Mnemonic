@@ -3,11 +3,32 @@ import type { WikiQuerySource } from "../wiki/query";
 
 /** Strip long code blocks from assistant text, keeping short snippets and error traces */
 function stripLongCodeBlocks(text: string): string {
+  const preserveKeywords = [
+    "config",
+    "schema",
+    "migration",
+    "sql",
+    "dockerfile",
+    "yaml",
+    "env",
+    "secret",
+    "regex",
+    "prompt",
+    "template",
+    "fixture",
+  ];
+
   return text.replace(/```[\w-]*\n([\s\S]*?)```/g, (match, body: string) => {
+    const fenceLanguage = (match.match(/^```([\w-]*)\n/)?.[1] ?? "").toLowerCase();
     const lines = body.split("\n");
-    if (lines.length <= 5) return match;
+    if (lines.length <= 12) return match;
 
     const lower = body.toLowerCase();
+    const hasPreserveKeyword =
+      preserveKeywords.some((keyword) => lower.includes(keyword)) ||
+      preserveKeywords.some((keyword) => fenceLanguage.includes(keyword));
+    if (hasPreserveKeyword) return match;
+
     const isErrorBlock =
       lower.includes("error") ||
       lower.includes("exception") ||
@@ -23,31 +44,75 @@ function stripLongCodeBlocks(text: string): string {
 
 /** Truncate session to fit context window */
 export function truncateMessages(session: ParsedSession, maxChars = 70000): string {
-  const all = session.messages
-    .filter((msg) => msg.role === "user" || msg.role === "assistant")
-    .map((msg) => {
+  const transcriptMessages = session.messages
+    .map((msg, originalIndex) => ({ msg, originalIndex }))
+    .filter(
+      (
+        entry,
+      ): entry is {
+        msg: { role: "user" | "assistant"; content: string };
+        originalIndex: number;
+      } => entry.msg.role === "user" || entry.msg.role === "assistant",
+    )
+    .map(({ msg, originalIndex }) => {
       const content = msg.role === "assistant" ? stripLongCodeBlocks(msg.content) : msg.content;
-      return `[${msg.role}]: ${content}`;
+      return {
+        role: msg.role,
+        content: msg.content,
+        formatted: `[${msg.role}]: ${content}`,
+        originalIndex,
+      };
     });
-  if (all.length === 0) {
+  if (transcriptMessages.length === 0) {
     return "";
   }
 
+  const all = transcriptMessages.map((entry) => entry.formatted);
   const total = joinedLength(all);
   if (total <= maxChars) {
     return all.join("\n\n");
   }
 
-  const headCount = Math.min(2, all.length);
-  const head = all.slice(0, headCount);
-  const separator = "... (truncated) ...";
-  const reserved = joinedLength(head) + separator.length + 4;
-  const budget = Math.max(0, maxChars - reserved);
+  const headCount = Math.min(2, transcriptMessages.length);
+  const head = transcriptMessages.slice(0, headCount).map((entry) => entry.formatted);
+  const tailTargetBudget = Math.max(0, Math.floor(maxChars * 0.8));
+  let promptLimit = 5;
 
+  const tail = buildTail(transcriptMessages, headCount, tailTargetBudget);
+  while (true) {
+    const middleBlock = buildMiddleBlock(session, transcriptMessages, headCount, tail.length, promptLimit);
+    const parts = middleBlock ? [...head, middleBlock, ...tail] : [...head, ...tail];
+    if (joinedLength(parts) <= maxChars) {
+      return parts.join("\n\n");
+    }
+
+    if (promptLimit > 0) {
+      promptLimit -= 1;
+      continue;
+    }
+
+    if (tail.length > 0) {
+      tail.shift();
+      continue;
+    }
+
+    if (parts.length === 0) {
+      return "";
+    }
+
+    return parts.join("\n\n").slice(0, maxChars);
+  }
+}
+
+function buildTail(
+  messages: Array<{ formatted: string }>,
+  headCount: number,
+  budget: number,
+): string[] {
   const tail: string[] = [];
   let tailLen = 0;
-  for (let index = all.length - 1; index >= headCount; index -= 1) {
-    const line = all[index]!;
+  for (let index = messages.length - 1; index >= headCount; index -= 1) {
+    const line = messages[index]!.formatted;
     const extraJoiner = tail.length > 0 ? 2 : 0;
     if (tailLen + extraJoiner + line.length > budget) {
       break;
@@ -57,12 +122,58 @@ export function truncateMessages(session: ParsedSession, maxChars = 70000): stri
     tailLen += extraJoiner + line.length;
   }
 
-  if (tail.length === 0 && all.length > headCount && budget > 0) {
-    tail.push(all[all.length - 1]!.slice(-budget));
+  if (tail.length === 0 && messages.length > headCount && budget > 0) {
+    tail.push(messages[messages.length - 1]!.formatted.slice(-budget));
   }
 
-  const parts = tail.length > 0 ? [...head, separator, ...tail] : [...head, separator];
-  return parts.join("\n\n");
+  return tail;
+}
+
+function buildMiddleBlock(
+  session: ParsedSession,
+  messages: Array<{ role: "user" | "assistant"; content: string; originalIndex: number }>,
+  headCount: number,
+  tailCount: number,
+  promptLimit: number,
+): string | null {
+  const middleStart = headCount;
+  const middleEnd = messages.length - tailCount;
+  const omitted = messages.slice(middleStart, middleEnd);
+  if (omitted.length === 0) {
+    return null;
+  }
+
+  const startIndex = omitted[0]!.originalIndex;
+  const endIndex = omitted[omitted.length - 1]!.originalIndex;
+  const toolCalls = session.messages
+    .slice(startIndex, endIndex + 1)
+    .filter((msg) => msg.role === "tool").length;
+
+  const summaryLine = `... (truncated ${omitted.length} messages, span #${startIndex + 1}-#${endIndex + 1}, tool calls: ${toolCalls}) ...`;
+  if (promptLimit <= 0) {
+    return summaryLine;
+  }
+
+  const skippedPrompts = omitted
+    .filter((entry) => entry.role === "user")
+    .map((entry) => toPromptPreview(entry.content))
+    .filter((line) => line.length > 0)
+    .slice(0, promptLimit);
+  if (skippedPrompts.length === 0) {
+    return summaryLine;
+  }
+
+  const promptLines = skippedPrompts.map((line, index) => `${index + 1}. ${line}`);
+  return [summaryLine, "... (skipped user prompts) ...", ...promptLines].join("\n");
+}
+
+function toPromptPreview(content: string): string {
+  const firstLine = content.split(/\r?\n/, 1)[0]?.trim() ?? "";
+  if (firstLine.length <= 120) {
+    return firstLine;
+  }
+
+  return firstLine.slice(0, 117).trimEnd() + "...";
 }
 
 function joinedLength(lines: string[]) {

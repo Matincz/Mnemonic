@@ -70,13 +70,15 @@ describe("deduplicateMemoryCorpus", () => {
     const result = deduplicateMemoryCorpus([
       makeMemory("mem-1", {
         title: "Tire Pressure Variance Observation",
-        summary: "Routine telemetry showed slight tire pressure variance during monitoring.",
+        summary:
+          "Routine telemetry showed slight tire pressure variance during monitoring and no corrective action was required.",
         tags: ["telemetry", "tire"],
       }),
       makeMemory("mem-2", {
         title: "Tire Pressure Variation Observation",
-        summary: "Routine telemetry showed slight tire pressure variation during monitoring.",
-        details: "Longer details with the same durable takeaway and richer examples.",
+        summary:
+          "Routine telemetry showed slight tire pressure variation during monitoring and no corrective action was required.",
+        details: "Longer details with the same durable takeaway, richer examples, and additional baseline data.",
         tags: ["tire", "telemetry", "sensor"],
         sourceSessionIds: ["session-2"],
         status: "verified",

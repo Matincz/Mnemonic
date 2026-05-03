@@ -2,6 +2,7 @@ import type { ParsedSession } from "../types";
 import { llmGenerateJSON } from "../llm";
 import { evaluatePrompt } from "../llm/prompts";
 import { EvalResultSchema } from "../llm/schemas";
+import { createHash } from "crypto";
 
 export async function evaluate(session: ParsedSession): Promise<{
   shouldProcess: boolean;
@@ -68,6 +69,18 @@ function classifyObviousNonMemorySession(session: ParsedSession): string | null 
 
   if (isBenignTelemetryOnly(joined) && totalChars < 4000) {
     return "This session contains a one-off telemetry or sensor reading without an anomaly, regression, or durable lesson.";
+  }
+
+  if (isUserAbortedSession(session)) {
+    return "The user aborted the session before completion, so there is no stable outcome worth storing.";
+  }
+
+  if (isUnresolvedFailureLoop(session)) {
+    return "This session is an unresolved failure loop with repeated identical errors and no confirmed fix outcome.";
+  }
+
+  if (isPureBrowsingSession(session)) {
+    return "This session is pure browsing-style discussion without tool execution, code blocks, or actionable implementation intent.";
   }
 
   if (isVersionCheckOrModelInfo(joined) && totalChars < 4000) {
@@ -262,4 +275,75 @@ function isVersionCheckOrModelInfo(text: string) {
 
   const versionHits = versionMarkers.filter((marker) => lower.includes(marker)).length;
   return versionHits >= 1 && !durableMarkers.some((marker) => lower.includes(marker));
+}
+
+function isUserAbortedSession(session: ParsedSession) {
+  const lastUserMessage = [...session.messages]
+    .reverse()
+    .find((message) => message.role === "user" && message.content.trim().length > 0);
+
+  if (!lastUserMessage) {
+    return false;
+  }
+
+  return /\b(stop|cancel|abort|nevermind|never mind)\b/i.test(lastUserMessage.content);
+}
+
+function isPureBrowsingSession(session: ParsedSession) {
+  if (session.messages.some((message) => message.role === "tool")) {
+    return false;
+  }
+
+  const assistantMessages = session.messages.filter((message) => message.role === "assistant");
+  if (assistantMessages.length === 0) {
+    return false;
+  }
+
+  return assistantMessages.every((message) => {
+    const content = message.content.toLowerCase();
+    if (content.includes("```") || /\blet'?s\b/i.test(content)) {
+      return false;
+    }
+
+    return !/\b(tool|exec_command|write_stdin|apply_patch|exit_code|stdout|stderr)\b/i.test(content);
+  });
+}
+
+function isUnresolvedFailureLoop(session: ParsedSession) {
+  const userRequestedDocumentation = session.messages
+    .filter((message) => message.role === "user")
+    .some((message) => /\blet'?s document this\b|document this|记录一下|记下来/i.test(message.content));
+
+  if (userRequestedDocumentation) {
+    return false;
+  }
+
+  const fingerprints = new Map<string, number>();
+
+  for (const message of session.messages) {
+    for (const snippet of extractFailureSnippets(message.content)) {
+      const fingerprint = createHash("sha256").update(snippet).digest("hex");
+      fingerprints.set(fingerprint, (fingerprints.get(fingerprint) ?? 0) + 1);
+    }
+  }
+
+  const repeatedFailure = [...fingerprints.values()].some((count) => count >= 4);
+  if (!repeatedFailure) {
+    return false;
+  }
+
+  const lastAssistantMessage = [...session.messages].reverse().find((message) => message.role === "assistant");
+  if (!lastAssistantMessage) {
+    return true;
+  }
+
+  return !/\b(fixed|resolved|works|passes|passed)\b/i.test(lastAssistantMessage.content);
+}
+
+function extractFailureSnippets(text: string) {
+  return text
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter((line) => /\b(error|failed|failure|exception|traceback|panic|fatal|timeout)\b/i.test(line))
+    .map((line) => line.slice(0, 200));
 }

@@ -201,11 +201,11 @@ function isCrossBatchNearDuplicate(left: Memory, right: Memory) {
     [right.title, right.summary].join(" "),
   );
 
-  if (titleSimilarity >= 0.65 || combinedSimilarity >= 0.70) {
+  if (titleSimilarity >= 0.82 || combinedSimilarity >= 0.82) {
     return true;
   }
 
-  return hasTagOverlap(left.tags, right.tags) && titleSimilarity >= 0.45 && summarySimilarity >= 0.45;
+  return hasTagOverlap(left.tags, right.tags) && combinedSimilarity >= 0.78 && summarySimilarity >= 0.55;
 }
 
 function hasTagOverlap(left: string[], right: string[]) {

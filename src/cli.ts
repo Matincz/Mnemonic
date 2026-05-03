@@ -184,6 +184,7 @@ totalMemories: ${stats.totalMemories}
 contradictions: ${stats.contradictions}
 embeddingIndexed: ${stats.embeddingIndexed}
 lastIndexedAt: ${stats.lastIndexedAt ?? "(never)"}
+lastMaintenanceAt: ${stats.lastMaintenanceAt ?? "(never)"}
 vectorBackend: ${stats.vector.backend}
 vectorTotalRows: ${stats.vector.totalRows ?? stats.vector.indexed}
 vectorIndices: ${stats.vector.indices.length ? stats.vector.indices.map((index) => `${index.name}:${index.type}`).join(", ") : "(none)"}`);
@@ -201,6 +202,7 @@ async function printStats() {
 totalMemories: ${stats.totalMemories}
 contradictions: ${stats.contradictions}
 embeddingIndexed: ${stats.embeddingIndexed}
+lastMaintenanceAt: ${stats.lastMaintenanceAt ?? "(never)"}
 vectorBackend: ${stats.vector.backend}
 byLayer:
 ${formatCountMap(countBy(memories, (memory) => memory.layer))}
@@ -309,12 +311,11 @@ async function runOptimize() {
 async function runPrune(dryRun: boolean) {
   const { storage } = createApp();
   await storage.init();
-  const all = storage.listAll();
 
   const now = Date.now();
   const pruneAgeDays = 14;
 
-  const toPrune = all.filter((memory) => {
+  const result = await storage.prune((memory) => {
     // Low-salience episodic
     if (memory.layer === "episodic" && memory.salience < 0.45) {
       const age = now - new Date(memory.createdAt).getTime();
@@ -325,17 +326,16 @@ async function runPrune(dryRun: boolean) {
       return true;
     }
     return false;
+  }, {
+    dryRun,
   });
+  const toPrune = result.pruned;
 
-  console.log(`Prune candidates: ${toPrune.length} / ${all.length} total memories`);
+  console.log(`Prune candidates: ${toPrune.length} / ${result.total} total memories`);
 
   if (toPrune.length > 0) {
     console.log("\nBreakdown:");
-    const byLayer = new Map<string, number>();
-    for (const m of toPrune) {
-      byLayer.set(m.layer, (byLayer.get(m.layer) ?? 0) + 1);
-    }
-    for (const [layer, count] of byLayer) {
+    for (const [layer, count] of result.byLayer) {
       console.log(`  ${layer}: ${count}`);
     }
 
@@ -348,13 +348,7 @@ async function runPrune(dryRun: boolean) {
   }
 
   if (!dryRun && toPrune.length > 0) {
-    const keepIds = new Set(all.map((m) => m.id));
-    for (const m of toPrune) keepIds.delete(m.id);
-    const kept = all.filter((m) => keepIds.has(m.id));
-    storage.db.withTransaction(() => {
-      storage.db.replaceAllMemories(kept);
-    });
-    console.log(`\nPruned ${toPrune.length} memories. Remaining: ${kept.length}`);
+    console.log(`\nPruned ${toPrune.length} memories. Remaining: ${result.kept.length}`);
   } else if (dryRun && toPrune.length > 0) {
     console.log("\nDry run — no changes made. Run without --dry-run to apply.");
   }

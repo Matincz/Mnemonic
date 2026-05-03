@@ -16,6 +16,9 @@ export interface RuntimeStatus {
   updatedAt: string;
   message: string;
   processedSessions: number;
+  pid?: number;
+  startedAt?: string;
+  heartbeatAt?: string;
   lastSessionId?: string;
   lastSource?: string;
   lastMemoryCount?: number;
@@ -28,6 +31,9 @@ const defaultStatus: RuntimeStatus = {
   message: "Daemon not started.",
   processedSessions: 0,
 };
+
+const HEARTBEAT_TTL_MS = 2 * 60 * 1000;
+const activeStates = new Set<RuntimeStatus["state"]>(["starting", "backfill", "watching", "error"]);
 
 export class RuntimeIPC {
   constructor(
@@ -47,13 +53,34 @@ export class RuntimeIPC {
 
   writeStatus(next: Partial<RuntimeStatus>) {
     const current = this.readStatus();
+    const updatedAt = new Date().toISOString();
     const merged: RuntimeStatus = {
       ...current,
       ...next,
-      updatedAt: new Date().toISOString(),
+      updatedAt,
     };
+    if (activeStates.has(merged.state)) {
+      merged.pid = process.pid;
+      merged.startedAt = current.pid === process.pid && current.startedAt ? current.startedAt : (merged.startedAt ?? updatedAt);
+      merged.heartbeatAt = updatedAt;
+    } else {
+      delete merged.pid;
+      delete merged.startedAt;
+      delete merged.heartbeatAt;
+    }
     writeFileSync(this.statusPath, JSON.stringify(merged, null, 2) + "\n");
     return merged;
+  }
+
+  heartbeat() {
+    const current = this.readStatus();
+    if (!activeStates.has(current.state)) {
+      return current;
+    }
+    return this.writeStatus({
+      state: current.state,
+      message: current.message,
+    });
   }
 
   readStatus(): RuntimeStatus {
@@ -62,10 +89,11 @@ export class RuntimeIPC {
     }
 
     try {
-      return {
+      const status = {
         ...defaultStatus,
         ...JSON.parse(readFileSync(this.statusPath, "utf8")),
       } as RuntimeStatus;
+      return this.withLiveness(status);
     } catch {
       return defaultStatus;
     }
@@ -97,4 +125,39 @@ export class RuntimeIPC {
       .filter((event): event is RuntimeEvent => event !== null)
       .reverse();
   }
+
+  private withLiveness(status: RuntimeStatus): RuntimeStatus {
+    if (!activeStates.has(status.state)) {
+      return status;
+    }
+
+    if (!status.pid || !isProcessAlive(status.pid)) {
+      return markStale(status, "Daemon process is not running.");
+    }
+
+    const heartbeatTime = Date.parse(status.heartbeatAt ?? status.updatedAt);
+    if (!Number.isFinite(heartbeatTime) || Date.now() - heartbeatTime > HEARTBEAT_TTL_MS) {
+      return markStale(status, "Daemon heartbeat is stale.");
+    }
+
+    return status;
+  }
+}
+
+function isProcessAlive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function markStale(status: RuntimeStatus, message: string): RuntimeStatus {
+  return {
+    ...status,
+    state: "stopped",
+    message,
+    lastError: message,
+  };
 }

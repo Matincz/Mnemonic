@@ -253,4 +253,48 @@ describe("consolidate", () => {
 
     expect(results).toEqual([episodic]);
   });
+
+  it("writes back synthesis links to supporting episodic memories", async () => {
+    const episodic = makeMemory("episodic-1", {
+      layer: "episodic",
+      title: "Observed cache stampede during peak traffic",
+      summary: "Repeated cache misses created load spikes.",
+      tags: ["cache", "incident"],
+    });
+    const durable = makeMemory("durable-1", {
+      layer: "semantic",
+      title: "Cache resilience patterns",
+    });
+
+    llmGenerateJSONMock.mockImplementation(async (_prompt: string): Promise<unknown> => [
+      {
+        memory_id: "episodic-1",
+        action: "create-synthesis",
+        layer: "semantic",
+        title: "Cache stampede mitigation pattern",
+        summary: "Use request coalescing and soft TTLs to avoid stampedes.",
+        details: "The incident confirms coalescing + soft TTL as the preferred mitigation.",
+        tags: ["cache", "resilience"],
+        linked_ids: ["durable-1"],
+        salience: 0.88,
+      },
+    ]);
+
+    const { consolidate } = await import("../../src/pipeline/consolidator");
+
+    const results = await consolidate(
+      [episodic],
+      {
+        findRelatedMemoriesBatch: mock(async () => [[hit(durable)]]),
+        getMemory: mock(() => null),
+      } as never,
+    );
+
+    const synthesis = results.find((memory) => memory.title === "Cache stampede mitigation pattern");
+    const updatedEpisodic = results.find((memory) => memory.id === "episodic-1");
+    expect(synthesis).toBeDefined();
+    expect(updatedEpisodic).toBeDefined();
+    expect(synthesis!.supportingMemoryIds).toContain("episodic-1");
+    expect(updatedEpisodic!.linkedMemoryIds).toContain(synthesis!.id);
+  });
 });

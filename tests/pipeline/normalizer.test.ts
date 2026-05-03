@@ -69,6 +69,23 @@ describe("normalizer", () => {
     expect(result[0]!.tags).toContain("security");
   });
 
+  it("merges when combined title+summary similarity crosses the new threshold", () => {
+    const result = normalize([
+      makeMemory("1", {
+        title: "JWT refresh handling guide",
+        summary: "Handle token rotation after refresh and persist the new pair in cache with retries",
+      }),
+      makeMemory("2", {
+        title: "JWT refresh handling guide",
+        summary: "Handle token rotation after refresh and persist the new pair in cache with retry support",
+        details: "Longer retained version with durable implementation details and rollback notes",
+      }),
+    ]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!.id).toBe("2");
+  });
+
   it("downgrades weak semantic/procedural to episodic", () => {
     const result = normalize([
       makeMemory("1", {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { RuntimeIPC } from "../../src/ipc/runtime";
@@ -10,7 +10,7 @@ describe("RuntimeIPC", () => {
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "mnemonic-ipc-"));
-    ipc = new RuntimeIPC(join(root, "status.json"), join(root, "events.ndjson"));
+    ipc = new RuntimeIPC(join(root, "status.json"), join(root, "events.ndjson"), root);
   });
 
   afterEach(() => {
@@ -33,8 +33,44 @@ describe("RuntimeIPC", () => {
     const events = ipc.readRecentEvents(5);
 
     expect(status.state).toBe("watching");
+    expect(status.pid).toBe(process.pid);
+    expect(status.heartbeatAt).toBeDefined();
     expect(status.processedSessions).toBe(2);
     expect(events).toHaveLength(1);
     expect(events[0]!.sessionId).toBe("session-1");
+  });
+
+  it("reports active legacy status without pid as stopped", () => {
+    writeFileSync(
+      join(root, "status.json"),
+      JSON.stringify({
+        state: "watching",
+        updatedAt: new Date().toISOString(),
+        message: "Watching",
+        processedSessions: 3,
+      }),
+    );
+
+    const status = ipc.readStatus();
+    expect(status.state).toBe("stopped");
+    expect(status.message).toBe("Daemon process is not running.");
+  });
+
+  it("reports stale heartbeat as stopped", () => {
+    writeFileSync(
+      join(root, "status.json"),
+      JSON.stringify({
+        state: "watching",
+        updatedAt: "1970-01-01T00:00:00.000Z",
+        heartbeatAt: "1970-01-01T00:00:00.000Z",
+        message: "Watching",
+        processedSessions: 3,
+        pid: process.pid,
+      }),
+    );
+
+    const status = ipc.readStatus();
+    expect(status.state).toBe("stopped");
+    expect(status.message).toBe("Daemon heartbeat is stale.");
   });
 });

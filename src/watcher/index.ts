@@ -97,7 +97,7 @@ export class WatcherOrchestrator {
     sessions.sort((left, right) => left.timestamp.getTime() - right.timestamp.getTime());
 
     for (const session of sessions) {
-      await this.handleSession(session, `amp:${session.id}`, sessionHash(session));
+      await this.processQueuedSession(session, `amp:${session.id}`, sessionHash(session), "amp");
     }
   }
 
@@ -158,7 +158,7 @@ export class WatcherOrchestrator {
         .sort((left, right) => left.timestamp.getTime() - right.timestamp.getTime());
 
       for (const session of sessions) {
-        await this.handleSession(session, `opencode:${session.id}`, sessionHash(session));
+        await this.processQueuedSession(session, `opencode:${session.id}`, sessionHash(session), "opencode");
       }
     } catch (err) {
       console.error(`[watcher] Error processing ${dbPath}:`, err);
@@ -167,12 +167,21 @@ export class WatcherOrchestrator {
     }
   }
 
+  private async processQueuedSession(session: ParsedSession, key: string, hash: string, source: string) {
+    try {
+      await this.handleSession(session, key, hash);
+    } catch (err) {
+      console.error(`[watcher] Error processing ${key}:`, err);
+      this.recordError(source, err);
+    }
+  }
+
   private async handleSession(session: ParsedSession, key: string, hash: string) {
     if (this.storage.isProcessed(key, hash)) {
       return;
     }
 
-    const result = await processSession(session, this.storage, this.wiki);
+    const result = await processSession(session, this.storage, this.wiki, console.log, hash);
     if (result.warnings?.length) {
       for (const warning of result.warnings) {
         console.warn("[watcher] ⚠ " + warning);

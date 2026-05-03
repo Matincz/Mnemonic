@@ -13,6 +13,10 @@ interface PipelineCheckpointRow {
   payload: string;
 }
 
+interface MetaRow {
+  value: string;
+}
+
 export class MemoryDB {
   private db: Database;
 
@@ -59,6 +63,12 @@ export class MemoryDB {
         payload TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         PRIMARY KEY (session_id, stage)
+      );
+
+      CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
 
       CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
@@ -232,6 +242,17 @@ export class MemoryDB {
 
   clearCheckpoints(sessionId: string) {
     this.db.prepare("DELETE FROM pipeline_checkpoints WHERE session_id = ?").run(sessionId);
+  }
+
+  getMeta(key: string): string | null {
+    const row = this.db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as MetaRow | null;
+    return row?.value ?? null;
+  }
+
+  setMeta(key: string, value: string) {
+    this.db.prepare(
+      "INSERT OR REPLACE INTO meta (key, value, updated_at) VALUES (?, ?, ?)",
+    ).run(key, value, new Date().toISOString());
   }
 
   withTransaction<T>(fn: () => T): T {

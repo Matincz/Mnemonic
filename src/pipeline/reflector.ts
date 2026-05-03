@@ -3,7 +3,7 @@ import { nanoid } from "nanoid";
 import { llmGenerateJSON } from "../llm";
 import { reflectPrompt } from "../llm/prompts";
 import { RawInsightSchema } from "../llm/schemas";
-import { textSimilarity } from "./normalizer";
+import { semanticSimilarity } from "./similarity";
 import type { Storage } from "../storage";
 
 interface RawInsight {
@@ -21,10 +21,10 @@ export async function reflect(memories: Memory[], storage: Storage): Promise<Mem
   }
 
   const recentInsights = storage.listByLayer("insight", 20);
-  const recentSemantic = storage.listByLayer("semantic", 5);
-  const context = [...recentInsights, ...recentSemantic].filter(
+  const fallbackContext = [...recentInsights, ...storage.listByLayer("semantic", 5)].filter(
     (memory) => !memories.some((current) => current.id === memory.id),
   );
+  const context = await buildReflectionContext(memories, storage, fallbackContext);
 
   const insights = await llmGenerateJSON(reflectPrompt(memories, context), RawInsightSchema);
   if (!Array.isArray(insights) || insights.length === 0) {
@@ -35,10 +35,10 @@ export async function reflect(memories: Memory[], storage: Storage): Promise<Mem
   const results: Memory[] = [];
 
   for (const insight of insights) {
-    const isDuplicate = recentInsights.some((existing) => matchesExistingInsight(existing, insight));
+    const isDuplicate = await hasInsightDuplicate(recentInsights, insight, storage);
     if (isDuplicate) continue;
 
-    const isDuplicateInBatch = results.some((prev) => matchesExistingInsight(prev, insight));
+    const isDuplicateInBatch = await hasInsightDuplicate(results, insight, storage);
     if (isDuplicateInBatch) continue;
 
     const timestamp = anchor.createdAt;
@@ -66,16 +66,54 @@ export async function reflect(memories: Memory[], storage: Storage): Promise<Mem
   return results;
 }
 
-function matchesExistingInsight(
+async function hasInsightDuplicate(
+  existingInsights: Array<Pick<Memory, "title" | "summary">>,
+  candidate: Pick<RawInsight, "title" | "summary">,
+  storage: Pick<Storage, "config">,
+) {
+  for (const existing of existingInsights) {
+    if (await matchesExistingInsight(existing, candidate, storage)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function matchesExistingInsight(
   existing: Pick<Memory, "title" | "summary">,
   candidate: Pick<RawInsight, "title" | "summary">,
+  storage: Pick<Storage, "config">,
 ) {
-  const titleSimilarity = textSimilarity(existing.title, candidate.title);
-  const summarySimilarity = textSimilarity(existing.summary, candidate.summary);
-  const combinedSimilarity = textSimilarity(
+  const titleSimilarity = await semanticSimilarity(existing.title, candidate.title, { storage });
+  const summarySimilarity = await semanticSimilarity(existing.summary, candidate.summary, { storage });
+  const combinedSimilarity = await semanticSimilarity(
     [existing.title, existing.summary].join(" "),
     [candidate.title, candidate.summary].join(" "),
+    { storage },
   );
 
-  return Math.max(titleSimilarity, summarySimilarity, combinedSimilarity) > 0.4;
+  return Math.max(titleSimilarity, summarySimilarity, combinedSimilarity) >= 0.6;
+}
+
+async function buildReflectionContext(memories: Memory[], storage: Storage, fallbackContext: Memory[]) {
+  try {
+    const related = await storage.findRelatedMemoriesBatch(memories, {
+      limit: 8,
+      layers: ["insight", "semantic"],
+    });
+    const contextMap = new Map<string, Memory>();
+    for (const hits of related) {
+      for (const hit of hits) {
+        const memory = hit.memory;
+        if (memories.some((current) => current.id === memory.id)) {
+          continue;
+        }
+        contextMap.set(memory.id, memory);
+      }
+    }
+    const context = [...contextMap.values()].slice(0, 25);
+    return context.length > 0 ? context : fallbackContext;
+  } catch {
+    return fallbackContext;
+  }
 }

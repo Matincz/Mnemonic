@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, rmSync } from "fs";
+import { existsSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { invalidateEmbeddingCache } from "../../src/embeddings";
@@ -34,7 +34,7 @@ function hit(memory: Memory, score: number, reasons: string[]): MemorySearchResu
   return { memory, score, reasons };
 }
 
-function createVectorStoreStub(): VectorStore {
+function createVectorStoreStub(overrides: Partial<VectorStore> = {}): VectorStore {
   return {
     backend: () => "lancedb",
     init: async () => {},
@@ -47,6 +47,7 @@ function createVectorStoreStub(): VectorStore {
     listCandidateIds: async () => [],
     search: async () => [],
     close: () => {},
+    ...overrides,
   };
 }
 
@@ -204,6 +205,113 @@ describe("related memory lookup", () => {
 
     expect(result?.map((hit) => hit.memory.id)).toContain("candidate-alpha");
     expect(result?.map((hit) => hit.memory.id)).not.toContain("candidate-beta");
+
+    storage.close();
+  });
+});
+
+describe("storage optimize", () => {
+  it("persists low-salience episodic pruning even when no duplicates are merged", async () => {
+    const root = join(tmpdir(), `mnemonic-optimize-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    tempRoots.push(root);
+    mkdirSync(root, { recursive: true });
+    process.env.MEMORY_AGENT_SETTINGS_PATH = join(root, "settings.json");
+    invalidateEmbeddingCache();
+
+    const storage = new Storage({
+      dbPath: join(root, "memory.db"),
+      vaultPath: join(root, "vault"),
+      vectorStore: createVectorStoreStub(),
+    });
+
+    const old = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    await storage.saveMemories([
+      makeMemory("old-low-a", {
+        layer: "episodic",
+        title: "Unique low salience A",
+        summary: "Old low salience memory A",
+        details: "Old low salience memory A details",
+        salience: 0.1,
+        createdAt: old,
+        updatedAt: old,
+      }),
+      makeMemory("old-low-b", {
+        layer: "episodic",
+        title: "Unique low salience B",
+        summary: "Old low salience memory B",
+        details: "Old low salience memory B details",
+        salience: 0.2,
+        createdAt: old,
+        updatedAt: old,
+      }),
+    ]);
+
+    expect(storage.listAll()).toHaveLength(2);
+    await storage.optimize();
+    expect(storage.listAll()).toHaveLength(0);
+
+    storage.close();
+  });
+});
+
+describe("storage prune", () => {
+  it("rebuilds derived vector and vault views through the Storage boundary", async () => {
+    const root = join(tmpdir(), `mnemonic-prune-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    tempRoots.push(root);
+    mkdirSync(root, { recursive: true });
+    process.env.MEMORY_AGENT_SETTINGS_PATH = join(root, "settings.json");
+    invalidateEmbeddingCache();
+    let resetCalls = 0;
+
+    const storage = new Storage({
+      dbPath: join(root, "memory.db"),
+      vaultPath: join(root, "vault"),
+      vectorStore: createVectorStoreStub({
+        reset: async () => {
+          resetCalls += 1;
+        },
+      }),
+    });
+
+    await storage.saveMemories([
+      makeMemory("keep", { title: "Keep memory" }),
+      makeMemory("drop", { title: "Drop memory" }),
+    ]);
+
+    expect(existsSync(join(root, "vault", "semantic", "drop.md"))).toBe(true);
+    const result = await storage.prune((memory) => memory.id === "drop");
+
+    expect(result.pruned.map((memory) => memory.id)).toEqual(["drop"]);
+    expect(storage.getMemory("drop")).toBeNull();
+    expect(storage.getMemory("keep")).not.toBeNull();
+    expect(existsSync(join(root, "vault", "semantic", "drop.md"))).toBe(false);
+    expect(existsSync(join(root, "vault", "semantic", "keep.md"))).toBe(true);
+    expect(resetCalls).toBe(1);
+
+    storage.close();
+  });
+
+  it("does not mark a processed session when derived materialization fails", async () => {
+    const root = join(tmpdir(), `mnemonic-processed-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    tempRoots.push(root);
+    mkdirSync(root, { recursive: true });
+    process.env.MEMORY_AGENT_SETTINGS_PATH = join(root, "settings.json");
+    invalidateEmbeddingCache();
+
+    const storage = new Storage({
+      dbPath: join(root, "memory.db"),
+      vaultPath: join(root, "vault"),
+      vectorStore: createVectorStoreStub(),
+    });
+    await storage.init();
+    (storage as unknown as { materializeMemories: () => Promise<void> }).materializeMemories = async () => {
+      throw new Error("derived view failed");
+    };
+
+    await expect(storage.recordProcessedSession([makeMemory("mem-fail")], "path", "hash", "session")).rejects.toThrow(
+      "derived view failed",
+    );
+    expect(storage.isProcessed("path", "hash")).toBe(false);
 
     storage.close();
   });

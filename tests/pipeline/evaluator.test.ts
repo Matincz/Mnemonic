@@ -8,6 +8,7 @@ const llmGenerateJSONMock = mock(async () => ({
 }));
 
 beforeEach(() => {
+  mock.restore();
   llmGenerateJSONMock.mockClear();
   mock.module("../../src/llm", () => ({
     llmGenerateJSON: llmGenerateJSONMock,
@@ -24,6 +25,16 @@ function makeSession(content: string): ParsedSession {
       { role: "user", content },
       { role: "assistant", content: "Acknowledged." },
     ],
+  };
+}
+
+function makeSessionFromMessages(messages: ParsedSession["messages"]): ParsedSession {
+  return {
+    id: "session-1",
+    source: "codex",
+    timestamp: new Date("2026-04-21T00:00:00.000Z"),
+    rawPath: "/tmp/session.jsonl",
+    messages,
   };
 }
 
@@ -58,6 +69,55 @@ describe("evaluate heuristics", () => {
 
     expect(result.shouldProcess).toBe(false);
     expect(result.reason).toContain("telemetry");
+    expect(llmGenerateJSONMock).not.toHaveBeenCalled();
+  });
+
+  it("skips unresolved failure loops before calling the llm", async () => {
+    const { evaluate } = await import("../../src/pipeline/evaluator");
+    const repeatedError = "ERROR: database connection timeout while replaying sync batch #42";
+    const result = await evaluate(
+      makeSessionFromMessages([
+        { role: "user", content: "Please fix this ingestion issue." },
+        { role: "assistant", content: repeatedError },
+        { role: "assistant", content: repeatedError },
+        { role: "assistant", content: repeatedError },
+        { role: "assistant", content: repeatedError },
+        { role: "assistant", content: "Still investigating." },
+      ]),
+    );
+
+    expect(result.shouldProcess).toBe(false);
+    expect(result.reason).toContain("unresolved failure loop");
+    expect(llmGenerateJSONMock).not.toHaveBeenCalled();
+  });
+
+  it("skips pure browsing sessions before calling the llm", async () => {
+    const { evaluate } = await import("../../src/pipeline/evaluator");
+    const result = await evaluate(
+      makeSessionFromMessages([
+        { role: "user", content: "Show me what's in this repo." },
+        { role: "assistant", content: "This repository has a src directory and several tests." },
+        { role: "assistant", content: "It appears to be a TypeScript daemon with memory indexing and retrieval features." },
+      ]),
+    );
+
+    expect(result.shouldProcess).toBe(false);
+    expect(result.reason).toContain("pure browsing");
+    expect(llmGenerateJSONMock).not.toHaveBeenCalled();
+  });
+
+  it("skips user-aborted sessions before calling the llm", async () => {
+    const { evaluate } = await import("../../src/pipeline/evaluator");
+    const result = await evaluate(
+      makeSessionFromMessages([
+        { role: "user", content: "Can you continue fixing the daemon?" },
+        { role: "assistant", content: "Sure, I can proceed with the patch." },
+        { role: "user", content: "Nevermind, stop for now." },
+      ]),
+    );
+
+    expect(result.shouldProcess).toBe(false);
+    expect(result.reason).toContain("aborted");
     expect(llmGenerateJSONMock).not.toHaveBeenCalled();
   });
 });

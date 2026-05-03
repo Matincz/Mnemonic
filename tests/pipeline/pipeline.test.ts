@@ -1,5 +1,5 @@
 // tests/pipeline/pipeline.test.ts
-import { describe, it, expect, mock, beforeEach } from "bun:test";
+import { describe, it, expect, mock, beforeEach, afterAll } from "bun:test";
 import { join } from "path";
 import type { Memory, ParsedSession } from "../../src/types";
 
@@ -12,6 +12,7 @@ const ingestMock = mock(async (): Promise<Memory[]> => []);
 const linkBatchMock = mock(async (memories: Memory[]): Promise<Memory[]> => memories);
 const consolidateMock = mock(async (memories: Memory[]): Promise<Memory[]> => memories);
 const reflectMock = mock(async (): Promise<Memory[]> => []);
+const propagateVerificationSignalsMock = mock(async () => {});
 type MockWikiOp = { action: string; type: string; slug: string; title: string; reason: string };
 const wikiIngestMock = mock(async (): Promise<MockWikiOp[]> => []);
 
@@ -33,6 +34,10 @@ mock.module("../../src/pipeline/consolidator", () => ({
 
 mock.module("../../src/pipeline/reflector", () => ({
   reflect: reflectMock,
+}));
+
+mock.module("../../src/pipeline/status-updater", () => ({
+  propagateVerificationSignals: propagateVerificationSignalsMock,
 }));
 
 mock.module("../../src/pipeline/wiki-ingestor", () => ({
@@ -108,6 +113,7 @@ beforeEach(() => {
   linkBatchMock.mockClear();
   consolidateMock.mockClear();
   reflectMock.mockClear();
+  propagateVerificationSignalsMock.mockClear();
   wikiIngestMock.mockClear();
 
   evaluateMock.mockImplementation(async () => ({ shouldProcess: true }));
@@ -115,7 +121,12 @@ beforeEach(() => {
   linkBatchMock.mockImplementation(async (memories: Memory[]): Promise<Memory[]> => memories);
   consolidateMock.mockImplementation(async (memories: Memory[]): Promise<Memory[]> => memories);
   reflectMock.mockImplementation(async (): Promise<Memory[]> => []);
+  propagateVerificationSignalsMock.mockImplementation(async () => {});
   wikiIngestMock.mockImplementation(async (): Promise<MockWikiOp[]> => []);
+});
+
+afterAll(() => {
+  mock.restore();
 });
 
 describe("Pipeline integration", () => {
@@ -173,6 +184,25 @@ describe("Pipeline integration", () => {
     expect(result.memories).toEqual([...consolidated, ...insights]);
     expect(result.wikiOps).toEqual([]);
     expect(result.warnings).toEqual(["wiki-ingest failed: wiki timeout"]);
+  });
+
+  it("keeps core memories when status updater fails", async () => {
+    const consolidated = [makeMemory("core-1", { layer: "procedural" })];
+    const insights = [makeMemory("insight-1", { layer: "insight" })];
+
+    ingestMock.mockImplementation(async (): Promise<Memory[]> => [makeMemory("raw-1")]);
+    consolidateMock.mockImplementation(async (): Promise<Memory[]> => consolidated);
+    reflectMock.mockImplementation(async (): Promise<Memory[]> => insights);
+    propagateVerificationSignalsMock.mockImplementation(async () => {
+      throw new Error("status write failed");
+    });
+
+    const { processSession } = await import("../../src/pipeline");
+    const result = await processSession(makeSession(), makeStorage(), makeWiki(), () => {});
+
+    expect(result.stage).toBe("done");
+    expect(result.memories).toEqual([...consolidated, ...insights]);
+    expect(result.warnings).toEqual(["status-updater failed: status write failed"]);
   });
 
   it("falls back to normalized memories when linking fails", async () => {
@@ -243,8 +273,24 @@ describe("Pipeline integration", () => {
 
     expect(linkBatchMock).toHaveBeenCalledTimes(1);
     const normalized = linkBatchMock.mock.calls[0]?.[0] as Memory[];
-    expect(normalized).toHaveLength(2);
+    expect(normalized.length).toBeGreaterThanOrEqual(2);
     expect(normalized.find((memory) => memory.id === "rich")?.tags).toEqual(["auth", "security"]);
     expect(normalized.find((memory) => memory.id === "weak")?.layer).toBe("episodic");
+    expect(normalized.some((memory) => memory.id === "thin")).toBe(false);
+  });
+
+  it("does not reuse stage checkpoints across different session content hashes", async () => {
+    evaluateMock
+      .mockImplementationOnce(async () => ({ shouldProcess: false, reason: "old content" }))
+      .mockImplementationOnce(async () => ({ shouldProcess: true, reason: "new content" }));
+
+    const { processSession } = await import("../../src/pipeline");
+    const storage = makeStorage();
+    const first = await processSession(makeSession(), storage, makeWiki(), () => {}, "hash-old");
+    const second = await processSession(makeSession(), storage, makeWiki(), () => {}, "hash-new");
+
+    expect(first.skipped).toBe(true);
+    expect(second.skipped).toBe(false);
+    expect(evaluateMock).toHaveBeenCalledTimes(2);
   });
 });

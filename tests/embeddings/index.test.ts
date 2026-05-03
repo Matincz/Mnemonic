@@ -12,7 +12,8 @@ describe("embedding provider cache", () => {
     const { removeSettings } = await import("../../src/settings");
     removeSettings();
 
-    const { invalidateEmbeddingCache } = await import("../../src/embeddings");
+    const embeddingsModule = "../../src/embeddings/index.ts?spec=embedding-cache-test";
+    const { invalidateEmbeddingCache } = await import(embeddingsModule);
     invalidateEmbeddingCache();
 
     process.env.MEMORY_AGENT_SETTINGS_PATH = originalSettingsPath;
@@ -30,7 +31,8 @@ describe("embedding provider cache", () => {
     process.env.MEMORY_AGENT_SETTINGS_PATH = join(root, "settings.json");
 
     const { saveSettings, removeSettings } = await import("../../src/settings");
-    const { hasEmbeddingProvider, invalidateEmbeddingCache } = await import("../../src/embeddings");
+    const embeddingsModule = "../../src/embeddings/index.ts?spec=embedding-cache-test";
+    const { hasEmbeddingProvider, invalidateEmbeddingCache } = await import(embeddingsModule);
 
     saveSettings({
       authMode: "api",

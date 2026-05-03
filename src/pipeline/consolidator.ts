@@ -25,6 +25,7 @@ export async function consolidate(memories: Memory[], storage: Storage): Promise
   }
 
   const outputs = [...memories];
+  const inputMemoryById = new Map(memories.map((memory) => [memory.id, memory]));
 
   const related = await storage.findRelatedMemoriesBatch(memories, {
     limit: 12,
@@ -95,8 +96,21 @@ export async function consolidate(memories: Memory[], storage: Storage): Promise
     }
 
     if (result.action === "create-synthesis") {
+      const synthesisId = `mem-${nanoid(12)}`;
+      const supportingEpisodicIds = Array.from(
+        new Set(
+          linkedIds.filter((id) => {
+            const linked = inputMemoryById.get(id);
+            return linked?.layer === "episodic";
+          }),
+        ),
+      );
+      const supportingMemoryIds = Array.from(
+        new Set(memory.layer === "episodic" ? [memory.id, ...supportingEpisodicIds] : [memory.id]),
+      );
+
       outputs.push({
-        id: `mem-${nanoid(12)}`,
+        id: synthesisId,
         layer: result.layer,
         title: result.title,
         summary: result.summary,
@@ -109,11 +123,23 @@ export async function consolidate(memories: Memory[], storage: Storage): Promise
         updatedAt: memory.createdAt,
         status: "observed" as const,
         sourceSessionIds: Array.from(new Set([...memory.sourceSessionIds, memory.sourceSessionId])),
-        supportingMemoryIds: [memory.id],
+        supportingMemoryIds,
         salience: clampSalience(result.salience ?? memory.salience),
-        linkedMemoryIds: Array.from(new Set([...linkedIds, memory.id])),
+        linkedMemoryIds: Array.from(new Set([...linkedIds, ...supportingMemoryIds])),
         contradicts: [...memory.contradicts],
       });
+
+      for (const supportingId of supportingMemoryIds) {
+        const supportingMemory = inputMemoryById.get(supportingId);
+        if (!supportingMemory || supportingMemory.layer !== "episodic") {
+          continue;
+        }
+
+        outputs.push({
+          ...supportingMemory,
+          linkedMemoryIds: Array.from(new Set([...(supportingMemory.linkedMemoryIds ?? []), synthesisId])),
+        });
+      }
     }
   }
 

@@ -89,12 +89,13 @@ function mergeNearDuplicates(memories: Memory[]): Memory[] {
 
 function isNearDuplicate(a: Memory, b: Memory): boolean {
   const titleSim = textSimilarity(a.title, b.title);
-  if (titleSim > 0.7) return true;
+  if (titleSim >= 0.8) return true;
 
-  const summarySim = textSimilarity(a.summary, b.summary);
-  if (summarySim > 0.6) return true;
-
-  if (titleSim > 0.5 && summarySim > 0.4) return true;
+  const combinedSim = textSimilarity(
+    [a.title, a.summary].join(" "),
+    [b.title, b.summary].join(" "),
+  );
+  if (combinedSim >= 0.78) return true;
 
   return false;
 }

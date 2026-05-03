@@ -38,24 +38,55 @@ export async function linkBatch(memories: Memory[], storage: Storage): Promise<M
 
   const results = await llmGenerateJSON(linkBatchPrompt(items), BatchLinkResultSchema);
   const resultMap = new Map(results.map((result) => [result.memory_id, result]));
+  const supersededUpdates = new Map<string, Memory>();
 
-  return memories.map((memory) => {
+  const linkedMemories = memories.map((memory) => {
     const batchResult = resultMap.get(memory.id);
     if (!batchResult) {
       return memory;
     }
 
     const candidates = items.find((item) => item.memory.id === memory.id)?.candidates ?? [];
+    const candidateMap = new Map(candidates.map((candidate) => [candidate.id, candidate]));
     const candidateIds = new Set(candidates.map((candidate) => candidate.id));
     const linkedIds = batchResult.linked_ids ?? [];
     const contradictsIds = batchResult.contradicts_ids ?? [];
+    const validContradicts = contradictsIds.filter((id) => candidateIds.has(id));
+
+    for (const contradictId of validContradicts) {
+      const candidate = candidateMap.get(contradictId);
+      if (!candidate) {
+        continue;
+      }
+
+      if (!shouldSupersedeCandidate(memory, candidate)) {
+        continue;
+      }
+
+      const previous = supersededUpdates.get(candidate.id) ?? candidate;
+      supersededUpdates.set(candidate.id, {
+        ...previous,
+        status: "superseded",
+        updatedAt: memory.createdAt,
+        linkedMemoryIds: Array.from(new Set([...(previous.linkedMemoryIds ?? []), memory.id])),
+      });
+    }
 
     return {
       ...memory,
       linkedMemoryIds: linkedIds.filter((id) => candidateIds.has(id)),
-      contradicts: contradictsIds.filter((id) => candidateIds.has(id)),
+      contradicts: validContradicts,
     };
   });
+
+  if (supersededUpdates.size > 0) {
+    const saveMemories = (storage as Partial<Pick<Storage, "saveMemories">>).saveMemories;
+    if (typeof saveMemories === "function") {
+      await saveMemories.call(storage, [...supersededUpdates.values()]);
+    }
+  }
+
+  return linkedMemories;
 }
 
 export async function linkWithPrompt(memory: Memory, storage: Storage): Promise<Memory> {
@@ -72,4 +103,15 @@ export async function linkWithPrompt(memory: Memory, storage: Storage): Promise<
     linkedMemoryIds: linkedIds.filter((id) => candidates.some((candidate) => candidate.id === id)),
     contradicts: contradictsIds.filter((id) => candidates.some((candidate) => candidate.id === id)),
   };
+}
+
+function shouldSupersedeCandidate(incoming: Memory, candidate: Memory) {
+  const incomingCreatedAt = new Date(incoming.createdAt).getTime();
+  const candidateUpdatedAt = new Date(candidate.updatedAt).getTime();
+
+  if (!Number.isFinite(incomingCreatedAt) || !Number.isFinite(candidateUpdatedAt)) {
+    return false;
+  }
+
+  return incomingCreatedAt > candidateUpdatedAt && incoming.salience >= candidate.salience;
 }

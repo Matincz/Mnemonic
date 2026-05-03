@@ -73,18 +73,75 @@ describe("prompts", () => {
         messages: [
           { role: "user", content: "Need to debug auth regression" },
           { role: "assistant", content: "Inspecting middleware and refresh flow" },
+          { role: "user", content: "Collect prod logs and compare refresh token traces" },
+          { role: "assistant", content: "Calling tools for auth log inspection" },
+          { role: "tool", content: "bun test --filter auth" },
+          { role: "user", content: "Check refresh rotation edge case after token exchange" },
           { role: "assistant", content: "filler ".repeat(120) },
           { role: "assistant", content: "Final fix: rotate refresh token after successful exchange" },
         ],
       },
-      220,
+      320,
     );
 
     expect(transcript).toContain("Need to debug auth regression");
     expect(transcript).toContain("Inspecting middleware and refresh flow");
     expect(transcript).toContain("Final fix: rotate refresh token");
-    expect(transcript).toContain("... (truncated) ...");
+    expect(transcript).toContain("... (truncated");
+    expect(transcript).toContain("tool calls: 1");
+    expect(transcript).toContain("... (skipped user prompts) ...");
+    expect(transcript).toContain("Collect prod logs and compare refresh token traces");
     expect(transcript).not.toContain("filler filler filler filler filler filler filler filler");
+  });
+
+  it("keeps short code blocks and strips long generic code blocks", () => {
+    const shortBlock = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"].join("\n");
+    const longBlock = Array.from({ length: 13 }, (_, index) => `line-${index}`).join("\n");
+
+    const transcript = truncateMessages(
+      {
+        ...session,
+        messages: [
+          { role: "user", content: "share snippets" },
+          {
+            role: "assistant",
+            content: `Short block:\n\`\`\`ts\n${shortBlock}\n\`\`\`\nLong block:\n\`\`\`ts\n${longBlock}\n\`\`\``,
+          },
+        ],
+      },
+      10000,
+    );
+
+    expect(transcript).toContain("Short block:");
+    expect(transcript).toContain("a\nb\nc\nd\ne\nf\ng\nh\ni\nj");
+    expect(transcript).toContain("`(code block omitted: 14 lines)`");
+  });
+
+  it("preserves long code blocks when whitelist keywords or error traces are present", () => {
+    const whitelistBlock = Array.from({ length: 14 }, (_, index) =>
+      index === 0 ? "schema: user_profile_v2" : `field_${index}: value`,
+    ).join("\n");
+    const errorBlock = Array.from({ length: 14 }, (_, index) =>
+      index === 0 ? "Error: failed to compile template" : `at frame_${index}`,
+    ).join("\n");
+
+    const transcript = truncateMessages(
+      {
+        ...session,
+        messages: [
+          { role: "user", content: "show details" },
+          {
+            role: "assistant",
+            content: `Whitelist:\n\`\`\`yaml\n${whitelistBlock}\n\`\`\`\nError:\n\`\`\`txt\n${errorBlock}\n\`\`\``,
+          },
+        ],
+      },
+      10000,
+    );
+
+    expect(transcript).toContain("schema: user_profile_v2");
+    expect(transcript).toContain("Error: failed to compile template");
+    expect(transcript).not.toContain("code block omitted");
   });
 
   it("includes historical context when building reflect prompts", () => {

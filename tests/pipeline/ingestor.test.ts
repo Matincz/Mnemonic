@@ -1,14 +1,46 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import type { Memory, ParsedSession, MemorySearchResult } from "../../src/types";
 
 const llmGenerateJSONMock = mock(async (_prompt: string): Promise<unknown> => []);
+const hasEmbeddingProviderMock = mock(() => true);
+const embedTextsMock = mock(async (input: string[]) => input.map((text) => ({ model: "test-embedding", values: vectorOf(text) })));
 
 beforeEach(() => {
   llmGenerateJSONMock.mockClear();
+  hasEmbeddingProviderMock.mockClear();
+  embedTextsMock.mockClear();
+  hasEmbeddingProviderMock.mockImplementation(() => true);
+  embedTextsMock.mockImplementation(async (input: string[]) =>
+    input.map((text) => ({ model: "test-embedding", values: vectorOf(text) })),
+  );
   mock.module("../../src/llm", () => ({
     llmGenerateJSON: llmGenerateJSONMock,
   }));
+  mock.module("../../src/embeddings", () => ({
+    hasEmbeddingProvider: hasEmbeddingProviderMock,
+    embedTexts: embedTextsMock,
+  }));
 });
+
+afterAll(() => {
+  mock.restore();
+});
+
+function vectorOf(text: string): number[] {
+  const normalized = text.toLowerCase();
+  if (normalized.includes("deployment procedure for iot")) return [0.92, 0.28, 0];
+  if (normalized.includes("deployment procedure for code")) return [0.2, 0.98, 0];
+  if (normalized.includes("jwt refresh handling")) return [1, 0, 0];
+  if (normalized.includes("auth refresh token flow")) return [0.97, 0.2, 0];
+  if (normalized.includes("deployment procedure")) return [0.94, 0.25, 0];
+  if (normalized.includes("auth token rotation policy")) return [0.93, 0.3, 0];
+  if (normalized.includes("auth token rotation procedure")) return [0.92, 0.31, 0];
+  if (normalized.includes("reset the daemon")) return [0.9, 0.35, 0];
+  if (normalized.includes("restart the watcher")) return [0.89, 0.34, 0];
+  if (normalized.includes("replay a failed sync")) return [0, 1, 0];
+  if (normalized.includes("zeekr")) return [0, 0.95, 0.2];
+  return [0.2, 0.2, 0.9];
+}
 
 function makeSession(overrides: Partial<ParsedSession> = {}): ParsedSession {
   return {
@@ -81,14 +113,14 @@ describe("ingest", () => {
     expect(memory?.status).toBe("verified");
   });
 
-  it("skips memories that match existing same-layer memories with overlapping tags", async () => {
+  it("deduplicates semantically similar memories in the same project", async () => {
     llmGenerateJSONMock.mockImplementation(async () => [
       {
         layer: "semantic",
-        title: "Zeekr to InfluxDB Sync Execution",
-        summary: "Zeekr sync completed and pushed data to InfluxDB.",
-        details: "Another routine sync run completed.",
-        tags: ["zeekr", "sync"],
+        title: "Auth refresh token flow",
+        summary: "Handle refresh token renewal and persist the updated JWT pair.",
+        details: "The refresh flow now rotates the JWT pair and stores it for retry paths.",
+        tags: ["auth", "jwt"],
         salience: 0.55,
       },
       {
@@ -104,7 +136,16 @@ describe("ingest", () => {
     const { ingest } = await import("../../src/pipeline/ingestor");
     const memories = await ingest(makeSession(), {
       findRelatedMemoriesBatch: async () => [
-        [hit(makeExistingMemory("existing-1"))],
+        [
+          hit(
+            makeExistingMemory("existing-1", {
+              title: "JWT refresh handling",
+              summary: "Handle refresh token renewal and persist the updated JWT pair.",
+              tags: ["auth"],
+              project: "iot",
+            }),
+          ),
+        ],
         [],
       ],
     } as never);
@@ -146,10 +187,76 @@ describe("ingest", () => {
     expect(memories).toHaveLength(1);
     expect(memories[0]?.id).toBe("existing-proposed");
     expect(memories[0]?.status).toBe("verified");
-    expect(memories[0]?.sourceSessionId).toBe("session-1");
+    expect(memories[0]?.sourceSessionId).toBe("older-session");
+    expect(memories[0]?.sourceAgent).toBe("amp");
     expect(memories[0]?.sourceSessionIds).toEqual(["older-session", "session-1"]);
     expect(memories[0]?.supportingMemoryIds).toHaveLength(1);
     expect(memories[0]?.salience).toBe(0.9);
     expect(memories[0]?.details).toContain("queue depth returns to zero");
+  });
+
+  it("does not merge cross-project memories when title cosine is below the hard threshold", async () => {
+    llmGenerateJSONMock.mockImplementation(async () => [
+      {
+        layer: "semantic",
+        title: "Deployment procedure for IoT",
+        summary: "Deploys the service to production after checks pass.",
+        details: "Run tests, build image, deploy through CI pipeline.",
+        tags: ["deploy"],
+        salience: 0.6,
+      },
+    ]);
+
+    const { ingest } = await import("../../src/pipeline/ingestor");
+    const memories = await ingest(makeSession(), {
+      findRelatedMemoriesBatch: async () => [
+        [
+          hit(
+            makeExistingMemory("existing-cross-project", {
+              title: "Deployment procedure for Code",
+              summary: "Deploys another system in a separate project.",
+              project: "code",
+              tags: ["deploy"],
+            }),
+          ),
+        ],
+      ],
+    } as never);
+
+    expect(memories).toHaveLength(1);
+    expect(memories[0]?.id).not.toBe("existing-cross-project");
+    expect(memories[0]?.title).toBe("Deployment procedure for IoT");
+  });
+
+  it("links very similar cross-layer memories instead of merging them", async () => {
+    llmGenerateJSONMock.mockImplementation(async () => [
+      {
+        layer: "semantic",
+        title: "Auth token rotation policy",
+        summary: "Rotate tokens every 30 days with audit logging.",
+        details: "Policy details and audit evidence.",
+        tags: ["auth", "rotation"],
+        salience: 0.66,
+      },
+    ]);
+
+    const { ingest } = await import("../../src/pipeline/ingestor");
+    const memories = await ingest(makeSession(), {
+      findRelatedMemoriesBatch: async () => [
+        [
+          hit(
+            makeExistingMemory("existing-cross-layer", {
+              layer: "procedural",
+              title: "Auth token rotation procedure",
+              summary: "Rotate tokens every 30 days with audit logging.",
+            }),
+          ),
+        ],
+      ],
+    } as never);
+
+    expect(memories).toHaveLength(1);
+    expect(memories[0]?.id).not.toBe("existing-cross-layer");
+    expect(memories[0]?.linkedMemoryIds).toContain("existing-cross-layer");
   });
 });

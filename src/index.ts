@@ -30,6 +30,7 @@ export async function runDaemon() {
   ipc.writeStatus({ state: "watching", message: "Watching for session updates." });
 
   let ampTimeout: ReturnType<typeof setTimeout> | undefined;
+  let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
   let shuttingDown = false;
 
   const scheduleAmpPoll = async () => {
@@ -49,12 +50,18 @@ export async function runDaemon() {
   };
 
   ampTimeout = setTimeout(scheduleAmpPoll, 5 * 60 * 1000);
+  heartbeatInterval = setInterval(() => {
+    ipc.heartbeat();
+  }, 30 * 1000);
 
   const shutdown = () => {
     shuttingDown = true;
     console.log("\nMnemonic shutting down...");
     if (ampTimeout) {
       clearTimeout(ampTimeout);
+    }
+    if (heartbeatInterval) {
+      clearInterval(heartbeatInterval);
     }
     watcher.stop();
     storage.close();

@@ -4,15 +4,18 @@ import { llmGenerateJSON } from "../llm";
 import { ingestPrompt } from "../llm/prompts";
 import { RawMemorySchema } from "../llm/schemas";
 import type { Storage } from "../storage";
-import { textSimilarity } from "./normalizer";
+import { batchPairwiseSimilarity } from "./similarity";
 import { normalizeProjectName } from "./project";
+import { calibrateSalience } from "./salience";
 
-const DEDUPLICATION_SIMILARITY_THRESHOLD = 0.7;
-const HIGH_CONFIDENCE_TITLE_THRESHOLD = 0.9;
+const DEDUPLICATION_COMBINED_THRESHOLD = 0.78;
+const HIGH_CONFIDENCE_TITLE_THRESHOLD = 0.85;
+const CROSS_PROJECT_TITLE_THRESHOLD = 0.95;
+const CROSS_LAYER_LINK_THRESHOLD = 0.92;
 
 export async function ingest(
   session: ParsedSession,
-  storage?: Pick<Storage, "findRelatedMemoriesBatch">,
+  storage?: Pick<Storage, "findRelatedMemoriesBatch" | "config">,
 ): Promise<Memory[]> {
   const rawMemories = await llmGenerateJSON(ingestPrompt(session), RawMemorySchema);
   const project = normalizeProjectName(session.project);
@@ -39,44 +42,87 @@ export async function ingest(
       contradicts: [],
     };
   });
+  const calibrated = calibrateSalience(extracted);
 
-  if (!storage || extracted.length === 0) {
-    return extracted;
+  if (!storage || calibrated.length === 0) {
+    return calibrated;
   }
 
-  const relatedByMemory = await storage.findRelatedMemoriesBatch(extracted, { limit: 15 });
-  return extracted.flatMap((memory, index) => {
-    const duplicate = findDuplicateCandidate(memory, relatedByMemory[index] ?? []);
+  const relatedByMemory = await storage.findRelatedMemoriesBatch(calibrated, { limit: 15 });
+  const decisions = await Promise.all(
+    calibrated.map((memory, index) => findDuplicateCandidate(memory, relatedByMemory[index] ?? [], storage)),
+  );
+
+  return calibrated.flatMap((memory, index) => {
+    const decision = decisions[index];
+    const duplicate = decision?.duplicate ?? null;
+    const linkedMemoryIds = decision?.linkedMemoryIds ?? [];
+
+    const memoryWithLinks =
+      linkedMemoryIds.length === 0
+        ? memory
+        : {
+            ...memory,
+            linkedMemoryIds: Array.from(new Set([...(memory.linkedMemoryIds ?? []), ...linkedMemoryIds])),
+          };
+
     if (!duplicate) {
-      return [memory];
+      return [memoryWithLinks];
     }
 
-    if (shouldUpdateExistingMemory(memory, duplicate)) {
-      return [mergeIntoExistingMemory(memory, duplicate)];
+    if (shouldUpdateExistingMemory(memoryWithLinks, duplicate)) {
+      return [mergeIntoExistingMemory(memoryWithLinks, duplicate)];
     }
 
     return [];
   });
 }
 
-function findDuplicateCandidate(memory: Memory, candidates: MemorySearchResult[]) {
+async function findDuplicateCandidate(
+  memory: Memory,
+  candidates: MemorySearchResult[],
+  storage?: Pick<Storage, "config">,
+) {
   let bestMatch: { candidate: Memory; score: number } | null = null;
+  const linkedMemoryIds: string[] = [];
 
+  if (candidates.length === 0) {
+    return { duplicate: null, linkedMemoryIds };
+  }
+
+  const pairs: Array<[string, string]> = [];
   for (const { memory: candidate } of candidates) {
+    pairs.push([memory.title, candidate.title]);
+    pairs.push([memory.summary, candidate.summary]);
+    pairs.push(
+      [[memory.title, memory.summary].join(" "), [candidate.title, candidate.summary].join(" ")] as [string, string],
+    );
+  }
+  const similarities = await batchPairwiseSimilarity(pairs, { storage });
+
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index]!.memory;
+    const offset = index * 3;
+    const titleSimilarity = similarities[offset] ?? 0;
+    const summarySimilarity = similarities[offset + 1] ?? 0;
+    const combinedSimilarity = similarities[offset + 2] ?? 0;
+    const score = Math.max(titleSimilarity, summarySimilarity, combinedSimilarity);
+
     if (candidate.layer !== memory.layer) {
+      if (score >= CROSS_LAYER_LINK_THRESHOLD) {
+        linkedMemoryIds.push(candidate.id);
+      }
       continue;
     }
 
-    const titleSimilarity = textSimilarity(memory.title, candidate.title);
-    const summarySimilarity = textSimilarity(memory.summary, candidate.summary);
-    const combinedSimilarity = textSimilarity(
-      [memory.title, memory.summary].join(" "),
-      [candidate.title, candidate.summary].join(" "),
-    );
+    const sameProject = isSameProject(memory.project, candidate.project);
+    if (!sameProject && memory.project && candidate.project && titleSimilarity < CROSS_PROJECT_TITLE_THRESHOLD) {
+      continue;
+    }
 
-    const score = Math.max(titleSimilarity, summarySimilarity, combinedSimilarity);
+    const tagOverlap = hasTagOverlap(memory.tags, candidate.tags);
     const exactEnough = titleSimilarity >= HIGH_CONFIDENCE_TITLE_THRESHOLD;
-    const similarEnough = hasTagOverlap(memory.tags, candidate.tags) && score >= DEDUPLICATION_SIMILARITY_THRESHOLD;
+    const similarEnough = combinedSimilarity >= DEDUPLICATION_COMBINED_THRESHOLD && (tagOverlap || sameProject);
     if (!exactEnough && !similarEnough) {
       continue;
     }
@@ -86,7 +132,10 @@ function findDuplicateCandidate(memory: Memory, candidates: MemorySearchResult[]
     }
   }
 
-  return bestMatch?.candidate ?? null;
+  return {
+    duplicate: bestMatch?.candidate ?? null,
+    linkedMemoryIds: Array.from(new Set(linkedMemoryIds)),
+  };
 }
 
 function shouldUpdateExistingMemory(incoming: Memory, existing: Memory) {
@@ -111,8 +160,8 @@ function mergeIntoExistingMemory(incoming: Memory, existing: Memory): Memory {
     summary: pickLongerText(existing.summary, incoming.summary),
     details: pickLongerText(existing.details, incoming.details),
     project: existing.project ?? incoming.project,
-    sourceSessionId: incoming.sourceSessionId,
-    sourceAgent: incoming.sourceAgent,
+    sourceSessionId: existing.sourceSessionId,
+    sourceAgent: existing.sourceAgent,
     updatedAt: incoming.updatedAt,
     status: statusPriority(incoming.status) > statusPriority(existing.status) ? incoming.status : existing.status,
     sourceSessionIds: Array.from(new Set([...(existing.sourceSessionIds ?? []), ...incoming.sourceSessionIds])),
@@ -131,6 +180,13 @@ function hasTagOverlap(left: string[], right: string[]) {
 
   const rightTags = new Set(right.map((tag) => tag.toLowerCase()));
   return left.some((tag) => rightTags.has(tag.toLowerCase()));
+}
+
+function isSameProject(left?: string, right?: string) {
+  if (!left || !right) {
+    return false;
+  }
+  return left === right;
 }
 
 function statusPriority(status: Memory["status"]) {
