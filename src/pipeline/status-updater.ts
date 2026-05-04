@@ -1,7 +1,6 @@
 import type { Memory, ParsedSession } from "../types";
 import type { Storage } from "../storage";
 import { normalizeProjectName } from "./project";
-import { textSimilarity } from "./normalizer";
 import { batchPairwiseSimilarity } from "./similarity";
 
 const VERIFICATION_TEXT_REGEX = /\b(?:all tests?\s*pass(?:ed)?|tests?\s+pass(?:ed)?|build success(?:ful)?|deployed|deployment succeeded|merged|fix(?:ed)?\s+confirmed)\b/i;
@@ -107,24 +106,13 @@ async function findSemanticAssociations(
     }
   }
 
-  try {
-    const similarities = await batchPairwiseSimilarity(similarityPairs, { storage });
-    for (let index = 0; index < similarities.length; index += 1) {
-      const similarity = similarities[index] ?? 0;
-      const ref = pairRefs[index];
-      if (ref && similarity >= 0.6) {
-        pairs.push({ ...ref, similarity });
-      }
-    }
-  } catch {
-    for (const candidate of candidates) {
-      const candidateText = memoryText(candidate);
-      for (const memory of currentMemories) {
-        const similarity = textSimilarity(candidateText, memoryText(memory));
-        if (similarity >= 0.6) {
-          pairs.push({ candidateId: candidate.id, currentId: memory.id, similarity });
-        }
-      }
+  // batchPairwiseSimilarity already falls back to Jaccard on embedding failure.
+  const similarities = await batchPairwiseSimilarity(similarityPairs, { storage });
+  for (let index = 0; index < similarities.length; index += 1) {
+    const similarity = similarities[index] ?? 0;
+    const ref = pairRefs[index];
+    if (ref && similarity >= 0.6) {
+      pairs.push({ ...ref, similarity });
     }
   }
 
