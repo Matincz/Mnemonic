@@ -16,8 +16,18 @@ const CROSS_LAYER_LINK_THRESHOLD = 0.92;
 export async function ingest(
   session: ParsedSession,
   storage?: Pick<Storage, "findRelatedMemoriesBatch" | "config">,
+  metrics?: {
+    ingestedRaw?: number;
+    ingestedAfterCalibration?: number;
+    ingestedAfterDedup?: number;
+    dedupMerged?: number;
+    dedupDropped?: number;
+  },
 ): Promise<Memory[]> {
   const rawMemories = await llmGenerateJSON(ingestPrompt(session), RawMemorySchema);
+  if (metrics) {
+    metrics.ingestedRaw = rawMemories.length;
+  }
   const project = normalizeProjectName(session.project);
 
   const extracted = rawMemories.map((raw) => {
@@ -43,20 +53,40 @@ export async function ingest(
     };
   });
   const calibrated = calibrateSalience(extracted);
+  if (metrics) {
+    metrics.ingestedAfterCalibration = calibrated.length;
+  }
 
   if (!storage || calibrated.length === 0) {
+    if (metrics) {
+      metrics.ingestedAfterDedup = calibrated.length;
+      metrics.dedupMerged = 0;
+      metrics.dedupDropped = 0;
+    }
     return calibrated;
   }
 
-  const relatedByMemory = await storage.findRelatedMemoriesBatch(calibrated, { limit: 15 });
-  const decisions = await Promise.all(
+  let relatedByMemory: MemorySearchResult[][] = [];
+  try {
+    relatedByMemory = await storage.findRelatedMemoriesBatch(calibrated, { limit: 15 });
+  } catch (error) {
+    console.warn(`[ingestor] related memory lookup failed: ${formatError(error)}`);
+    relatedByMemory = calibrated.map(() => []);
+  }
+
+  const decisions = await Promise.allSettled(
     calibrated.map((memory, index) => findDuplicateCandidate(memory, relatedByMemory[index] ?? [], storage)),
   );
 
-  return calibrated.flatMap((memory, index) => {
+  let dedupMerged = 0;
+  let dedupDropped = 0;
+  const deduplicated = calibrated.flatMap((memory, index) => {
     const decision = decisions[index];
-    const duplicate = decision?.duplicate ?? null;
-    const linkedMemoryIds = decision?.linkedMemoryIds ?? [];
+    if (decision?.status === "rejected") {
+      console.warn(`[ingestor] duplicate detection failed for ${memory.id}: ${formatError(decision.reason)}`);
+    }
+    const duplicate = decision?.status === "fulfilled" ? decision.value.duplicate : null;
+    const linkedMemoryIds = decision?.status === "fulfilled" ? decision.value.linkedMemoryIds : [];
 
     const memoryWithLinks =
       linkedMemoryIds.length === 0
@@ -71,11 +101,21 @@ export async function ingest(
     }
 
     if (shouldUpdateExistingMemory(memoryWithLinks, duplicate)) {
+      dedupMerged += 1;
       return [mergeIntoExistingMemory(memoryWithLinks, duplicate)];
     }
 
+    dedupDropped += 1;
     return [];
   });
+
+  if (metrics) {
+    metrics.ingestedAfterDedup = deduplicated.length;
+    metrics.dedupMerged = dedupMerged;
+    metrics.dedupDropped = dedupDropped;
+  }
+
+  return deduplicated;
 }
 
 async function findDuplicateCandidate(
@@ -206,4 +246,8 @@ function statusPriority(status: Memory["status"]) {
 
 function pickLongerText(left: string, right: string) {
   return right.length > left.length ? right : left;
+}
+
+function formatError(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }

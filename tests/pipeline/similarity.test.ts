@@ -65,4 +65,34 @@ describe("similarity utilities", () => {
     expect(second).toBeCloseTo(first, 6);
     expect(embedTextsMock).toHaveBeenCalledTimes(1);
   });
+
+  it("separates cached vectors by embedding provider and model namespace", async () => {
+    const { semanticSimilarity } = await import("../../src/pipeline/similarity");
+    const left = "Auth refresh token flow";
+    const right = "JWT refresh handling";
+
+    await semanticSimilarity(left, right, {
+      storage: { config: { embedding: { provider: "api", model: "model-a" } } as never },
+    });
+    await semanticSimilarity(left, right, {
+      storage: { config: { embedding: { provider: "local", model: "model-b" } } as never },
+    });
+
+    expect(embedTextsMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("can force lexical fallback with an environment flag", async () => {
+    process.env.MNEMONIC_SIMILARITY_FORCE_FALLBACK = "1";
+    const { semanticSimilarity } = await import("../../src/pipeline/similarity");
+    const left = "auth refresh token flow";
+    const right = "refresh token flow for auth";
+
+    try {
+      const score = await semanticSimilarity(left, right);
+      expect(score).toBe(textSimilarity(left, right));
+      expect(embedTextsMock).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.MNEMONIC_SIMILARITY_FORCE_FALLBACK;
+    }
+  });
 });

@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "fs";
 import { dirname } from "path";
 import type { Memory, MemoryLayer } from "../types";
+import type { PipelineMetrics } from "../pipeline/metrics";
 import { rowToMemory, type SqlMemoryRow } from "./serialize";
 
 interface CountRow {
@@ -10,6 +11,12 @@ interface CountRow {
 
 interface PipelineCheckpointRow {
   stage: string;
+  payload: string;
+}
+
+interface PipelineMetricsRow {
+  session_id: string;
+  recorded_at: string;
   payload: string;
 }
 
@@ -63,6 +70,12 @@ export class MemoryDB {
         payload TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         PRIMARY KEY (session_id, stage)
+      );
+
+      CREATE TABLE IF NOT EXISTS pipeline_metrics (
+        session_id TEXT PRIMARY KEY,
+        recorded_at TEXT NOT NULL,
+        payload TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS meta (
@@ -198,6 +211,7 @@ export class MemoryDB {
       DELETE FROM memories_fts;
       DELETE FROM processed_files;
       DELETE FROM pipeline_checkpoints;
+      DELETE FROM pipeline_metrics;
       DELETE FROM memories;
     `);
   }
@@ -242,6 +256,25 @@ export class MemoryDB {
 
   clearCheckpoints(sessionId: string) {
     this.db.prepare("DELETE FROM pipeline_checkpoints WHERE session_id = ?").run(sessionId);
+  }
+
+  recordPipelineMetrics(metrics: PipelineMetrics, recordedAt = new Date().toISOString()) {
+    this.db.prepare(
+      `INSERT OR REPLACE INTO pipeline_metrics (session_id, recorded_at, payload)
+       VALUES (?, ?, ?)`,
+    ).run(metrics.sessionId, recordedAt, JSON.stringify(metrics));
+  }
+
+  listPipelineMetricsSince(sinceIso: string): Array<{ sessionId: string; recordedAt: string; payload: PipelineMetrics }> {
+    const rows = this.db.prepare(
+      "SELECT session_id, recorded_at, payload FROM pipeline_metrics WHERE recorded_at >= ? ORDER BY recorded_at DESC",
+    ).all(sinceIso) as PipelineMetricsRow[];
+
+    return rows.map((row) => ({
+      sessionId: row.session_id,
+      recordedAt: row.recorded_at,
+      payload: JSON.parse(row.payload) as PipelineMetrics,
+    }));
   }
 
   getMeta(key: string): string | null {

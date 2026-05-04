@@ -259,4 +259,46 @@ describe("ingest", () => {
     expect(memories[0]?.id).not.toBe("existing-cross-layer");
     expect(memories[0]?.linkedMemoryIds).toContain("existing-cross-layer");
   });
+
+  it("keeps extracted memories when related-memory lookup fails", async () => {
+    llmGenerateJSONMock.mockImplementation(async () => [
+      {
+        layer: "semantic",
+        title: "Auth cache rule",
+        summary: "Cache entries should be scoped by provider.",
+        details: "Provider and model changes must not reuse prior embedding vectors.",
+        tags: ["auth", "cache"],
+        salience: 0.7,
+      },
+      {
+        layer: "procedural",
+        title: "Replay failed ingest",
+        summary: "Retry failed ingest without dropping raw extracted memories.",
+        details: "Failures in related lookup should leave the incoming memory unchanged.",
+        tags: ["ingest", "retry"],
+        salience: 0.65,
+      },
+    ]);
+
+    const originalWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (message?: unknown) => {
+      warnings.push(String(message ?? ""));
+    };
+
+    try {
+      const { ingest } = await import("../../src/pipeline/ingestor");
+      const memories = await ingest(makeSession(), {
+        findRelatedMemoriesBatch: async () => {
+          throw new Error("lookup failed");
+        },
+      } as never);
+
+      expect(memories).toHaveLength(2);
+      expect(memories.map((memory) => memory.title)).toEqual(["Auth cache rule", "Replay failed ingest"]);
+      expect(warnings.join("\n")).toContain("related memory lookup failed: lookup failed");
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
 });

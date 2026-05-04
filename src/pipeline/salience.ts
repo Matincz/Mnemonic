@@ -14,15 +14,19 @@ const SALIENCE_BANDS = {
  * - p25-65 => 0.5-0.7
  * - <p25 => 0.3-0.5
  *
- * Insight memories and verified memories are left unchanged.
- * If fewer than 4 eligible memories exist, no remapping is applied.
+ * Insight, verified, and superseded memories are left unchanged.
+ * Two- and three-item batches get light compression instead of a full remap.
  */
 export function calibrateSalience(memories: Memory[]): Memory[] {
+  if (process.env.MNEMONIC_DISABLE_SALIENCE_CALIBRATION === "1") {
+    return memories;
+  }
+
   const eligible = memories
     .map((memory, index) => ({ memory, index }))
-    .filter(({ memory }) => memory.layer !== "insight" && memory.status !== "verified");
+    .filter(({ memory }) => memory.layer !== "insight" && memory.status !== "verified" && memory.status !== "superseded");
 
-  if (eligible.length < 4) {
+  if (eligible.length < 2) {
     return memories;
   }
 
@@ -39,7 +43,11 @@ export function calibrateSalience(memories: Memory[]): Memory[] {
 
   for (const [rank, item] of ranked.entries()) {
     const percentile = rank / denominator;
-    calibratedByIndex.set(item.index, mapPercentileToSalience(percentile));
+    const target = mapPercentileToSalience(percentile);
+    calibratedByIndex.set(
+      item.index,
+      eligible.length < 4 ? compressSmallBatchSalience(item.memory.salience, target) : target,
+    );
   }
 
   return memories.map((memory, index) => {
@@ -105,4 +113,9 @@ function interpolate(value: number, inMin: number, inMax: number, outMin: number
   const clamped = Math.max(0, Math.min(1, normalized));
   const mapped = outMin + clamped * (outMax - outMin);
   return Math.max(0, Math.min(1, mapped));
+}
+
+function compressSmallBatchSalience(original: number, target: number) {
+  const blended = original * 0.7 + target * 0.3;
+  return Math.max(0, Math.min(1, Math.min(original, blended)));
 }

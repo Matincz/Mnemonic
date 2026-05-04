@@ -30,6 +30,7 @@ import { combinedQueryPrompt } from "./llm/prompts";
 import { renderMemoryGraph, type GraphFormat } from "./graph";
 import { WatcherOrchestrator } from "./watcher";
 import { repairWikiLinks } from "./wiki/repair";
+import { summarizeMetrics } from "./pipeline/metrics";
 
 export type ParsedCliCommand =
   | { name: "start" }
@@ -38,6 +39,7 @@ export type ParsedCliCommand =
   | { name: "paths" }
   | { name: "status" }
   | { name: "stats" }
+  | { name: "metrics"; sinceDays: number }
   | { name: "backfill"; reset: boolean }
   | { name: "reset-data" }
   | { name: "reindex" }
@@ -70,6 +72,7 @@ export function parseCliArgs(args: string[]): ParsedCliCommand {
   if (head === "paths") return { name: "paths" };
   if (head === "status") return { name: "status" };
   if (head === "stats") return { name: "stats" };
+  if (head === "metrics") return { name: "metrics", sinceDays: parseSinceDays(args) };
   if (head === "backfill") return { name: "backfill", reset: args.includes("--reset") };
   if (head === "reset-data") return { name: "reset-data" };
   if (head === "reindex") return { name: "reindex" };
@@ -113,6 +116,7 @@ Usage:
   mnemonic paths                  Show all data and config file paths
   mnemonic status                 Show daemon and memory store status
   mnemonic stats                  Show memory statistics by layer/project/agent
+  mnemonic metrics --since 7d     Show recent pipeline quality metrics
   mnemonic backfill [--reset]     Re-process all watched sessions (--reset clears first)
   mnemonic reset-data             Delete all generated data while keeping configured auth/model settings
   mnemonic reindex                Rebuild the vector embedding index
@@ -210,6 +214,29 @@ byProject:
 ${formatCountMap(countBy(memories, (memory) => memory.project ?? "(none)"))}
 byAgent:
 ${formatCountMap(countBy(memories, (memory) => memory.sourceAgent))}`);
+
+  storage.close();
+}
+
+async function printMetrics(sinceDays: number) {
+  const { storage } = createApp();
+  await storage.init();
+  const summary = await summarizeMetrics(storage, sinceDays);
+
+  console.log(`Mnemonic metrics
+sinceDays: ${summary.sinceDays}
+sessions: ${summary.sessions}
+avgIngestedRaw: ${summary.averages.ingestedRaw.toFixed(2)}
+avgAfterDedup: ${summary.averages.ingestedAfterDedup.toFixed(2)}
+avgDedupMerged: ${summary.averages.dedupMerged.toFixed(2)}
+avgDedupDropped: ${summary.averages.dedupDropped.toFixed(2)}
+salienceP25: ${summary.salienceDistribution.p25.toFixed(3)}
+salienceP50: ${summary.salienceDistribution.p50.toFixed(3)}
+salienceP75: ${summary.salienceDistribution.p75.toFixed(3)}
+salienceP90: ${summary.salienceDistribution.p90.toFixed(3)}
+statusUpgraded: ${summary.statusUpgraded}
+topDedupProjects:
+${formatDedupProjects(summary.topDedupProjects)}`);
 
   storage.close();
 }
@@ -621,6 +648,33 @@ function countBy<T>(items: T[], keyFn: (item: T) => string) {
   return counts;
 }
 
+function parseSinceDays(args: string[]) {
+  const sinceIndex = args.indexOf("--since");
+  const raw = sinceIndex >= 0 ? args[sinceIndex + 1] : undefined;
+  if (!raw) {
+    return 7;
+  }
+
+  const match = raw.match(/^(\d+)d$/);
+  if (!match) {
+    return 7;
+  }
+
+  return Math.max(1, Number(match[1]));
+}
+
+function formatDedupProjects(projects: Array<{ project: string; sessions: number; dedupRate: number; dedupMerged: number; dedupDropped: number; ingestedRaw: number }>) {
+  if (projects.length === 0) {
+    return "- (none)";
+  }
+
+  return projects
+    .map((project) =>
+      `- ${project.project}: rate=${project.dedupRate.toFixed(3)} sessions=${project.sessions} merged=${project.dedupMerged} dropped=${project.dedupDropped} raw=${project.ingestedRaw}`,
+    )
+    .join("\n");
+}
+
 function defaultExportPath(dataRoot: string, format: "json" | "markdown") {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const extension = format === "json" ? "json" : "md";
@@ -729,6 +783,9 @@ export async function runCli(args = process.argv.slice(2)) {
       return;
     case "stats":
       await printStats();
+      return;
+    case "metrics":
+      await printMetrics(command.sinceDays);
       return;
     case "backfill":
       await runBackfill(command.reset);

@@ -1,13 +1,15 @@
-import type { Storage } from "../storage";
+import type { Config } from "../config";
 import { embedTexts, hasEmbeddingProvider } from "../embeddings";
+import { loadSettings, type EmbeddingSettings } from "../settings";
 import { textSimilarity } from "./normalizer";
 
-const MAX_VECTOR_CACHE_SIZE = 200;
+const MAX_VECTOR_CACHE_SIZE = 400;
+const FALLBACK_NAMESPACE = "text-fallback";
 
 const vectorCache = new Map<string, number[]>();
 
 export interface SemanticSimilarityOptions {
-  storage?: Pick<Storage, "config">;
+  storage?: { config?: Config };
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
@@ -50,15 +52,22 @@ export async function batchPairwiseSimilarity(
     return [];
   }
 
+  if (process.env.MNEMONIC_SIMILARITY_FORCE_FALLBACK === "1") {
+    return pairs.map(([left, right]) => textSimilarity(left, right));
+  }
+
   if (!hasEmbeddingProvider(undefined, options.storage?.config)) {
     return pairs.map(([left, right]) => textSimilarity(left, right));
   }
 
   const normalizedPairs = pairs.map(([left, right]) => [normalizeText(left), normalizeText(right)] as const);
+  const namespace = resolveCacheNamespace(options.storage?.config);
   const missing = new Set<string>();
   for (const [left, right] of normalizedPairs) {
-    if (left && !vectorCache.has(left)) missing.add(left);
-    if (right && !vectorCache.has(right)) missing.add(right);
+    const leftKey = buildCacheKey(namespace, left);
+    const rightKey = buildCacheKey(namespace, right);
+    if (left && !vectorCache.has(leftKey)) missing.add(left);
+    if (right && !vectorCache.has(rightKey)) missing.add(right);
   }
 
   try {
@@ -71,7 +80,7 @@ export async function batchPairwiseSimilarity(
         const text = missingTexts[i];
         const vector = vectors[i]?.values;
         if (text && vector) {
-          cacheVector(text, vector);
+          cacheVector(buildCacheKey(namespace, text), vector);
         }
       }
     }
@@ -80,8 +89,8 @@ export async function batchPairwiseSimilarity(
   }
 
   return normalizedPairs.map(([left, right], index) => {
-    const leftVector = left ? getCachedVector(left) : null;
-    const rightVector = right ? getCachedVector(right) : null;
+    const leftVector = left ? getCachedVector(buildCacheKey(namespace, left)) : null;
+    const rightVector = right ? getCachedVector(buildCacheKey(namespace, right)) : null;
     if (!leftVector || !rightVector) {
       return textSimilarity(pairs[index]?.[0] ?? "", pairs[index]?.[1] ?? "");
     }
@@ -91,6 +100,16 @@ export async function batchPairwiseSimilarity(
 
 export function resetSimilarityVectorCacheForTests() {
   vectorCache.clear();
+}
+
+export function resolveCacheNamespace(config?: Config): string {
+  const configuredEmbedding = (config as (Config & { embedding?: EmbeddingSettings }) | undefined)?.embedding;
+  const embedding = configuredEmbedding ?? loadSettings()?.embedding;
+  if (!embedding) {
+    return FALLBACK_NAMESPACE;
+  }
+
+  return `${embedding.provider}:${embedding.model}:auto`;
 }
 
 function normalizeText(text: string): string {
@@ -122,4 +141,8 @@ function getCachedVector(text: string): number[] | null {
   vectorCache.delete(text);
   vectorCache.set(text, vector);
   return vector;
+}
+
+function buildCacheKey(namespace: string, text: string) {
+  return `${namespace}::${text}`;
 }

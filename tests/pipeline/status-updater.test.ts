@@ -2,18 +2,30 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 import type { Memory, ParsedSession } from "../../src/types";
 
 const hasEmbeddingProviderMock = mock(() => false);
-const embedTextsMock = mock(async (): Promise<Array<{ model: string; values: number[] }>> => []);
+const embedTextsMock = mock(async (input: string[]): Promise<Array<{ model: string; values: number[] }>> =>
+  input.map((text) => ({ model: "test-embedding", values: vectorOf(text) })),
+);
 
 beforeEach(() => {
   mock.restore();
   hasEmbeddingProviderMock.mockClear();
   embedTextsMock.mockClear();
   hasEmbeddingProviderMock.mockImplementation(() => false);
+  embedTextsMock.mockImplementation(async (input: string[]) =>
+    input.map((text) => ({ model: "test-embedding", values: vectorOf(text) })),
+  );
   mock.module("../../src/embeddings", () => ({
     hasEmbeddingProvider: hasEmbeddingProviderMock,
     embedTexts: embedTextsMock,
   }));
 });
+
+function vectorOf(text: string): number[] {
+  const normalized = text.toLowerCase();
+  if (normalized.includes("validate daemon replay flow")) return [1, 0, 0];
+  if (normalized.includes("unrelated ui color")) return [0, 1, 0];
+  return [0.98, 0.1, 0];
+}
 
 function makeSession(messages: ParsedSession["messages"], overrides: Partial<ParsedSession> = {}): ParsedSession {
   return {
@@ -72,7 +84,7 @@ describe("propagateVerificationSignals", () => {
     const { propagateVerificationSignals } = await import(modulePath);
     await propagateVerificationSignals(
       makeSession([
-        { role: "assistant", content: "✅ all tests pass after replay fix" },
+        { role: "assistant", content: "bun test exit_code: 0 all tests pass after replay fix" },
       ]),
       [current],
       {
@@ -129,6 +141,124 @@ describe("propagateVerificationSignals", () => {
         saveMemories,
       } as never,
     );
+
+    expect(saveMemories).not.toHaveBeenCalled();
+  });
+
+  it("allows reset reprocessing to verify historical proposed memories within the session window", async () => {
+    const current = makeMemory("current-1", {
+      status: "observed",
+      createdAt: new Date("2026-04-20T00:00:00.000Z").toISOString(),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z").toISOString(),
+    });
+    const candidate = makeMemory("proposed-reset", {
+      createdAt: new Date("2026-04-15T00:00:00.000Z").toISOString(),
+      updatedAt: new Date("2026-04-15T00:00:00.000Z").toISOString(),
+    });
+
+    const saveMemories = mock(async (_memories: Memory[]) => {});
+    const modulePath = "../../src/pipeline/status-updater.ts?spec=status-updater-test-4";
+    const { propagateVerificationSignals } = await import(modulePath);
+    await propagateVerificationSignals(
+      makeSession([{ role: "assistant", content: "bun test exit_code: 0 all tests pass" }], {
+        timestamp: new Date("2026-04-20T00:00:00.000Z"),
+      }),
+      [current],
+      {
+        config: {} as never,
+        listAll: () => [candidate],
+        saveMemories,
+      } as never,
+    );
+
+    expect(saveMemories).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not allow old sessions to verify memories from more than the clock-skew window ahead", async () => {
+    const candidate = makeMemory("future-proposed", {
+      createdAt: new Date("2026-04-20T00:00:00.000Z").toISOString(),
+      updatedAt: new Date("2026-04-20T00:00:00.000Z").toISOString(),
+    });
+
+    const saveMemories = mock(async (_memories: Memory[]) => {});
+    const modulePath = "../../src/pipeline/status-updater.ts?spec=status-updater-test-5";
+    const { propagateVerificationSignals } = await import(modulePath);
+    await propagateVerificationSignals(
+      makeSession([{ role: "assistant", content: "bun test exit_code: 0 all tests pass" }], {
+        timestamp: new Date("2026-04-15T00:00:00.000Z"),
+      }),
+      [makeMemory("current-1", { status: "observed" })],
+      {
+        config: {} as never,
+        listAll: () => [candidate],
+        saveMemories,
+      } as never,
+    );
+
+    expect(saveMemories).not.toHaveBeenCalled();
+  });
+
+  it("rejects unanchored or weak verification language", async () => {
+    const saveMemories = mock(async (_memories: Memory[]) => {});
+    const modulePath = "../../src/pipeline/status-updater.ts?spec=status-updater-test-6";
+    const { propagateVerificationSignals } = await import(modulePath);
+
+    for (const content of ["plan to deploy next week", "git merge conflict resolved", "will deploy tomorrow"]) {
+      await propagateVerificationSignals(
+        makeSession([{ role: "assistant", content }]),
+        [makeMemory("current-1", { status: "observed" })],
+        {
+          config: {} as never,
+          listAll: () => [makeMemory(`candidate-${content}`)],
+          saveMemories,
+        } as never,
+      );
+    }
+
+    expect(saveMemories).not.toHaveBeenCalled();
+  });
+
+  it("reuses similarity vector cache across repeated propagation runs", async () => {
+    hasEmbeddingProviderMock.mockImplementation(() => true);
+
+    const { resetSimilarityVectorCacheForTests } = await import("../../src/pipeline/similarity");
+    resetSimilarityVectorCacheForTests();
+    const candidate = makeMemory("proposed-cache");
+    const current = makeMemory("current-cache", { status: "observed" });
+    const saveMemories = mock(async (_memories: Memory[]) => {});
+    const modulePath = "../../src/pipeline/status-updater.ts?spec=status-updater-test-7";
+    const { propagateVerificationSignals } = await import(modulePath);
+    const storage = {
+      config: { embedding: { provider: "api", model: "test-embedding" } } as never,
+      listAll: () => [candidate],
+      saveMemories,
+    } as never;
+
+    await propagateVerificationSignals(makeSession([{ role: "assistant", content: "bun test exit_code: 0 all tests pass" }]), [current], storage);
+    await propagateVerificationSignals(makeSession([{ role: "assistant", content: "bun test exit_code: 0 all tests pass" }]), [current], storage);
+
+    expect(embedTextsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("can disable verification propagation with an environment flag", async () => {
+    process.env.MNEMONIC_DISABLE_VERIFICATION_PROPAGATION = "1";
+    const saveMemories = mock(async (_memories: Memory[]) => {});
+    const modulePath = "../../src/pipeline/status-updater.ts?spec=status-updater-test-8";
+    const { propagateVerificationSignals } = await import(modulePath);
+
+    try {
+      await propagateVerificationSignals(
+        makeSession([{ role: "assistant", content: "bun test exit_code: 0 all tests pass" }]),
+        [makeMemory("current-1", { status: "observed" })],
+        {
+          config: {} as never,
+          listAll: () => [makeMemory("proposed-1")],
+          saveMemories,
+        } as never,
+      );
+    } finally {
+      delete process.env.MNEMONIC_DISABLE_VERIFICATION_PROPAGATION;
+    }
 
     expect(saveMemories).not.toHaveBeenCalled();
   });

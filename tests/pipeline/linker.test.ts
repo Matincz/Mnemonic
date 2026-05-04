@@ -81,6 +81,7 @@ describe("linkBatch contradiction handling", () => {
     expect(persisted[0]?.id).toBe("old-1");
     expect(persisted[0]?.status).toBe("superseded");
     expect(persisted[0]?.updatedAt).toBe(incoming.createdAt);
+    expect(persisted[0]?.salience).toBeCloseTo(0.42, 6);
     expect(persisted[0]?.linkedMemoryIds).toContain("incoming-1");
   });
 

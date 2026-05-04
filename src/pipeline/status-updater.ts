@@ -1,21 +1,27 @@
 import type { Memory, ParsedSession } from "../types";
 import type { Storage } from "../storage";
-import { embedTexts, hasEmbeddingProvider } from "../embeddings";
 import { normalizeProjectName } from "./project";
 import { textSimilarity } from "./normalizer";
+import { batchPairwiseSimilarity } from "./similarity";
 
-const VERIFICATION_TEXT_REGEX = /✓|✅|all tests?\s*pass|build success|deployed|merged|fix(?:ed)?\s+confirmed/i;
+const VERIFICATION_TEXT_REGEX = /\b(?:all tests?\s*pass(?:ed)?|tests?\s+pass(?:ed)?|build success(?:ful)?|deployed|deployment succeeded|merged|fix(?:ed)?\s+confirmed)\b/i;
+const WEAK_VERIFICATION_REGEX = /\b(?:will|plan(?:ned)?|planning|might|maybe|should|would|could|next week|tomorrow|merge conflict)\b/i;
 const EXIT_CODE_ZERO_REGEX = /\bexit[_ ]?code["']?\s*[:=]\s*0\b/i;
-const VERIFICATION_COMMAND_REGEX = /\b(?:bun test|npm test|pnpm test|yarn test|pytest|go test|cargo test|deploy)\b/i;
+const VERIFICATION_COMMAND_REGEX = /\b(?:bun test|npm test|pnpm test|yarn test|pytest|go test|cargo test|git merge|deploy)\b/i;
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_CLOCK_SKEW_MS = 24 * 60 * 60 * 1000;
 
 export async function propagateVerificationSignals(
   session: ParsedSession,
   memories: Memory[],
   storage: Storage,
-): Promise<void> {
+): Promise<number> {
+  if (process.env.MNEMONIC_DISABLE_VERIFICATION_PROPAGATION === "1") {
+    return 0;
+  }
+
   if (memories.length === 0 || !hasVerificationSignal(session)) {
-    return;
+    return 0;
   }
 
   const sessionProject = normalizeProjectName(session.project ?? memories.find((memory) => memory.project)?.project);
@@ -25,7 +31,7 @@ export async function propagateVerificationSignals(
     if (memory.status !== "proposed") return false;
 
     const createdAtMs = new Date(memory.createdAt).getTime();
-    if (!Number.isFinite(createdAtMs) || createdAtMs < cutoff || createdAtMs > sessionTimestamp) {
+    if (!Number.isFinite(createdAtMs) || createdAtMs < cutoff || createdAtMs > sessionTimestamp + MAX_CLOCK_SKEW_MS) {
       return false;
     }
 
@@ -38,12 +44,12 @@ export async function propagateVerificationSignals(
   });
 
   if (proposedCandidates.length === 0) {
-    return;
+    return 0;
   }
 
   const associations = await findSemanticAssociations(memories, proposedCandidates, storage);
   if (associations.size === 0) {
-    return;
+    return 0;
   }
 
   const upgraded = proposedCandidates
@@ -58,13 +64,12 @@ export async function propagateVerificationSignals(
   if (upgraded.length > 0) {
     await storage.saveMemories(upgraded);
   }
+
+  return upgraded.length;
 }
 
 function hasVerificationSignal(session: ParsedSession) {
   const normalizedMessages = session.messages.map((message) => message.content.trim()).filter(Boolean);
-  if (normalizedMessages.some((message) => VERIFICATION_TEXT_REGEX.test(message))) {
-    return true;
-  }
 
   for (let index = 0; index < normalizedMessages.length; index += 1) {
     const current = normalizedMessages[index] ?? "";
@@ -72,10 +77,12 @@ function hasVerificationSignal(session: ParsedSession) {
     const previous = normalizedMessages[index - 1] ?? "";
     const window = `${previous}\n${current}\n${next}`;
 
-    const hasExitCodeZero = EXIT_CODE_ZERO_REGEX.test(current) || EXIT_CODE_ZERO_REGEX.test(window);
-    const hasVerificationCommand = VERIFICATION_COMMAND_REGEX.test(current) || VERIFICATION_COMMAND_REGEX.test(window);
+    if (!VERIFICATION_TEXT_REGEX.test(current) || WEAK_VERIFICATION_REGEX.test(current)) {
+      continue;
+    }
 
-    if (hasExitCodeZero && hasVerificationCommand) {
+    const anchoredInWindow = EXIT_CODE_ZERO_REGEX.test(window) || VERIFICATION_COMMAND_REGEX.test(window);
+    if (anchoredInWindow) {
       return true;
     }
   }
@@ -89,37 +96,27 @@ async function findSemanticAssociations(
   storage: Storage,
 ): Promise<Map<string, string[]>> {
   const pairs: Array<{ candidateId: string; currentId: string; similarity: number }> = [];
-  const currentTexts = currentMemories.map(memoryText).map((text) => text || "(empty)");
-  const candidateTexts = candidates.map(memoryText).map((text) => text || "(empty)");
+  const similarityPairs: Array<[string, string]> = [];
+  const pairRefs: Array<{ candidateId: string; currentId: string }> = [];
 
-  if (hasEmbeddingProvider(undefined, storage.config)) {
-    try {
-      const vectors = await embedTexts([...currentTexts, ...candidateTexts], { config: storage.config });
-      if (vectors.length === currentTexts.length + candidateTexts.length) {
-        const currentVectors = vectors.slice(0, currentTexts.length);
-        const candidateVectors = vectors.slice(currentTexts.length);
-
-        for (const [candidateIndex, candidate] of candidates.entries()) {
-          const candidateVector = candidateVectors[candidateIndex];
-          if (!candidateVector) continue;
-
-          for (const [currentIndex, memory] of currentMemories.entries()) {
-            const currentVector = currentVectors[currentIndex];
-            if (!currentVector) continue;
-
-            const similarity = cosineSimilarity(currentVector.values, candidateVector.values);
-            if (similarity >= 0.6) {
-              pairs.push({ candidateId: candidate.id, currentId: memory.id, similarity });
-            }
-          }
-        }
-      }
-    } catch {
-      // fall through to lexical fallback
+  for (const candidate of candidates) {
+    const candidateText = memoryText(candidate);
+    for (const memory of currentMemories) {
+      similarityPairs.push([candidateText, memoryText(memory)]);
+      pairRefs.push({ candidateId: candidate.id, currentId: memory.id });
     }
   }
 
-  if (pairs.length === 0) {
+  try {
+    const similarities = await batchPairwiseSimilarity(similarityPairs, { storage });
+    for (let index = 0; index < similarities.length; index += 1) {
+      const similarity = similarities[index] ?? 0;
+      const ref = pairRefs[index];
+      if (ref && similarity >= 0.6) {
+        pairs.push({ ...ref, similarity });
+      }
+    }
+  } catch {
     for (const candidate of candidates) {
       const candidateText = memoryText(candidate);
       for (const memory of currentMemories) {
@@ -151,28 +148,4 @@ async function findSemanticAssociations(
 
 function memoryText(memory: Memory) {
   return [memory.title, memory.summary, memory.details].filter(Boolean).join("\n").trim();
-}
-
-function cosineSimilarity(left: number[], right: number[]) {
-  if (left.length === 0 || right.length === 0 || left.length !== right.length) {
-    return 0;
-  }
-
-  let dot = 0;
-  let leftNorm = 0;
-  let rightNorm = 0;
-
-  for (let index = 0; index < left.length; index += 1) {
-    const l = left[index] ?? 0;
-    const r = right[index] ?? 0;
-    dot += l * r;
-    leftNorm += l * l;
-    rightNorm += r * r;
-  }
-
-  if (leftNorm === 0 || rightNorm === 0) {
-    return 0;
-  }
-
-  return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
 }

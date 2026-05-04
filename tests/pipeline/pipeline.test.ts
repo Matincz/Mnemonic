@@ -92,7 +92,9 @@ function makeStorage() {
       saveCheckpoint(sessionId: string, stage: string, payload: unknown) {
         checkpoints.set(`${sessionId}:${stage}`, payload);
       },
+      recordPipelineMetrics() {},
     },
+    listAll: () => [],
   } as never;
 }
 

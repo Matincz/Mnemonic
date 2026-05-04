@@ -174,13 +174,16 @@ export class Storage {
   ): Promise<MemorySearchResult[][]> {
     await this.ensureInitialized();
     const limit = options.limit ?? 10;
+    const expandedRecall = limit >= 15;
+    const keywordLimit = expandedRecall ? limit * 3 : limit;
+    const vectorLimit = expandedRecall ? limit * 2 : limit;
     const textResultsByMemory = memories.map((memory) => {
-      const textMatches = this.searchText(buildRelatedMemoryQuery(memory), Math.max(limit * 4, 20))
+      const textMatches = this.searchText(buildRelatedMemoryQuery(memory), Math.max(keywordLimit * 4, 20))
         .filter((candidate) => candidate.id !== memory.id)
         .filter((candidate) => (options.layers ? options.layers.includes(candidate.layer) : true))
         .filter((candidate) => (!memory.project || !candidate.project || candidate.project === memory.project));
 
-      return rankResults(textMatches, "keyword", limit);
+      return rankResults(textMatches, "keyword", keywordLimit);
     });
 
     if (!hasEmbeddingProvider(undefined, this.config)) {
@@ -200,12 +203,12 @@ export class Storage {
           return textResults.slice(0, limit);
         }
 
-        const vectorResults = await this.vectorStore.search(vector.values, limit * 3, {
+        const vectorResults = await this.vectorStore.search(vector.values, vectorLimit, {
           excludeIds: [memory.id],
           layers: options.layers,
           project: memory.project,
           candidateIds: await this.getSemanticCandidateIds(
-            limit,
+            vectorLimit,
             textResults.map((hit) => hit.memory.id),
             {
               layers: options.layers,

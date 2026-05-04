@@ -68,6 +68,7 @@ export async function linkBatch(memories: Memory[], storage: Storage): Promise<M
         ...previous,
         status: "superseded",
         updatedAt: memory.createdAt,
+        salience: Math.max(0, Math.min(1, previous.salience * 0.7)),
         linkedMemoryIds: Array.from(new Set([...(previous.linkedMemoryIds ?? []), memory.id])),
       });
     }

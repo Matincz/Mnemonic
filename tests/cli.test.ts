@@ -63,6 +63,15 @@ describe("cli parsing", () => {
     });
   });
 
+  it("parses metrics command", async () => {
+    const { parseCliArgs } = await import("../src/cli");
+
+    expect(parseCliArgs(["metrics", "--since", "14d"])).toEqual({
+      name: "metrics",
+      sinceDays: 14,
+    });
+  });
+
   it("parses reset-data command", async () => {
     const { parseCliArgs } = await import("../src/cli");
 
@@ -294,6 +303,61 @@ describe("cli parsing", () => {
     expect(output).toContain("- proj-a: 2");
     expect(output).toContain("- codex: 1");
     expect(output).toContain("- claude-code: 1");
+  });
+
+  it("prints pipeline metrics output", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "mnemonic-metrics-cli-"));
+    const dataRoot = join(tempDir, "data-root");
+    const configRoot = join(tempDir, "config-root");
+    mkdirSync(join(dataRoot, "data"), { recursive: true });
+    mkdirSync(configRoot, { recursive: true });
+    process.env.MNEMONIC_DATA_ROOT = dataRoot;
+    process.env.MNEMONIC_CONFIG_ROOT = configRoot;
+    process.env.MNEMONIC_VECTOR_BACKEND = "sqlite";
+
+    const { Storage } = await import("../src/storage");
+    const storage = new Storage();
+    await storage.init();
+    storage.db.recordPipelineMetrics({
+      sessionId: "metric-session",
+      project: "proj-a",
+      ingestedRaw: 4,
+      ingestedAfterCalibration: 4,
+      ingestedAfterDedup: 3,
+      dedupMerged: 1,
+      dedupDropped: 0,
+      crossLayerLinked: 0,
+      reflectorAdded: 0,
+      consolidatorMerged: 0,
+      consolidatorSynthesized: 0,
+      statusUpgraded: 2,
+      contradictsSuperseded: 0,
+      salienceDistribution: { p25: 0.4, p50: 0.5, p75: 0.7, p90: 0.9 },
+    });
+    storage.close();
+
+    const { runCli } = await import("../src/cli");
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (message?: unknown) => {
+      logs.push(String(message ?? ""));
+    };
+
+    try {
+      await runCli(["metrics", "--since", "7d"]);
+    } finally {
+      console.log = originalLog;
+      delete process.env.MNEMONIC_DATA_ROOT;
+      delete process.env.MNEMONIC_CONFIG_ROOT;
+      delete process.env.MNEMONIC_VECTOR_BACKEND;
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+
+    const output = logs.join("\n");
+    expect(output).toContain("Mnemonic metrics");
+    expect(output).toContain("sessions: 1");
+    expect(output).toContain("statusUpgraded: 2");
+    expect(output).toContain("- proj-a:");
   });
 
   it("resets generated data without deleting settings", async () => {
