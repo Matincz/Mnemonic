@@ -72,6 +72,14 @@ describe("cli parsing", () => {
     });
   });
 
+  it("parses recalibrate command", async () => {
+    const { parseCliArgs } = await import("../src/cli");
+
+    expect(parseCliArgs(["recalibrate"])).toEqual({
+      name: "recalibrate",
+    });
+  });
+
   it("parses reset-data command", async () => {
     const { parseCliArgs } = await import("../src/cli");
 
@@ -332,6 +340,12 @@ describe("cli parsing", () => {
       consolidatorSynthesized: 0,
       statusUpgraded: 2,
       contradictsSuperseded: 0,
+      verifiedRatio: 0.5,
+      supersededAdded: 1,
+      contradictsAdded: 2,
+      multiSourceRatio: 0.25,
+      projectCoverage: 1,
+      duplicateTitleGroups: 0,
       salienceDistribution: { p25: 0.4, p50: 0.5, p75: 0.7, p90: 0.9 },
     });
     storage.close();
@@ -357,6 +371,8 @@ describe("cli parsing", () => {
     expect(output).toContain("Mnemonic metrics");
     expect(output).toContain("sessions: 1");
     expect(output).toContain("statusUpgraded: 2");
+    expect(output).toContain("verifiedRatio: 0.500");
+    expect(output).toContain("contradictsAdded: 2");
     expect(output).toContain("- proj-a:");
   });
 

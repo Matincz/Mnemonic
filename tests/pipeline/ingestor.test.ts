@@ -39,6 +39,7 @@ function vectorOf(text: string): number[] {
   if (normalized.includes("restart the watcher")) return [0.89, 0.34, 0];
   if (normalized.includes("replay a failed sync")) return [0, 1, 0];
   if (normalized.includes("zeekr")) return [0, 0.95, 0.2];
+  if (normalized.includes("shared cache policy")) return [0.88, 0.44, 0.12];
   return [0.2, 0.2, 0.9];
 }
 
@@ -85,6 +86,14 @@ function hit(memory: Memory): MemorySearchResult {
     memory,
     score: 0.9,
     reasons: ["keyword"],
+  };
+}
+
+function semanticHit(memory: Memory): MemorySearchResult {
+  return {
+    memory,
+    score: 0.9,
+    reasons: ["semantic"],
   };
 }
 
@@ -181,7 +190,7 @@ describe("ingest", () => {
 
     const { ingest } = await import("../../src/pipeline/ingestor");
     const memories = await ingest(makeSession(), {
-      findRelatedMemoriesBatch: async () => [[hit(existing)]],
+      findRelatedMemoriesBatch: async () => [[semanticHit(existing)]],
     } as never);
 
     expect(memories).toHaveLength(1);
@@ -193,6 +202,73 @@ describe("ingest", () => {
     expect(memories[0]?.supportingMemoryIds).toHaveLength(1);
     expect(memories[0]?.salience).toBe(0.9);
     expect(memories[0]?.details).toContain("queue depth returns to zero");
+  });
+
+  it("merges embedding-only matches across layers when project is compatible", async () => {
+    llmGenerateJSONMock.mockImplementation(async () => [
+      {
+        layer: "insight",
+        title: "Shared cache policy",
+        summary: "Cache entries should stay scoped by provider and model.",
+        details: "Provider and model changes must not reuse previous embedding vectors.",
+        tags: ["cache"],
+        salience: 0.8,
+      },
+    ]);
+
+    const existing = makeExistingMemory("existing-embedding-only", {
+      layer: "semantic",
+      title: "Shared cache policy",
+      summary: "Cache entries should stay scoped by provider and model.",
+      details: "Embedding vectors are scoped by provider and model.",
+      tags: ["cache"],
+      project: "iot",
+      sourceSessionIds: ["older-session"],
+    });
+
+    const { ingest } = await import("../../src/pipeline/ingestor");
+    const memories = await ingest(makeSession(), {
+      findRelatedMemoriesBatch: async () => [[semanticHit(existing)]],
+    } as never);
+
+    expect(memories).toHaveLength(1);
+    expect(memories[0]?.id).toBe("existing-embedding-only");
+    expect(memories[0]?.sourceSessionIds).toEqual(["older-session", "session-1"]);
+  });
+
+  it("preserves all source agents while keeping the original single sourceAgent", async () => {
+    llmGenerateJSONMock.mockImplementation(async () => [
+      {
+        layer: "procedural",
+        title: "Reset the daemon",
+        summary: "Restart the watcher and verify the backlog drains.",
+        details: "Run restart, then confirm the queue depth returns to zero after the fix.",
+        tags: ["daemon", "restart"],
+        status: "verified",
+        salience: 0.9,
+      },
+    ]);
+
+    const existing = makeExistingMemory("existing-agents", {
+      layer: "procedural",
+      title: "Reset the daemon",
+      summary: "Restart the watcher.",
+      details: "Restart the watcher.",
+      sourceAgent: "amp",
+      sourceAgents: ["amp", "claude-code"],
+      sourceSessionIds: ["older-session", "middle-session"],
+      tags: ["daemon"],
+      status: "proposed",
+      salience: 0.45,
+    });
+
+    const { ingest } = await import("../../src/pipeline/ingestor");
+    const memories = await ingest(makeSession({ source: "gemini" }), {
+      findRelatedMemoriesBatch: async () => [[hit(existing)]],
+    } as never);
+
+    expect(memories[0]?.sourceAgent).toBe("amp");
+    expect(memories[0]?.sourceAgents).toEqual(["amp", "claude-code", "gemini"]);
   });
 
   it("does not merge cross-project memories when title cosine is below the hard threshold", async () => {

@@ -102,6 +102,52 @@ describe("propagateVerificationSignals", () => {
     expect(updated[0]?.linkedMemoryIds).toContain("current-1");
   });
 
+  it("upgrades related observed memories to verified when test pass signals are present", async () => {
+    const current = makeMemory("current-observed", {
+      status: "observed",
+      sourceSessionId: "session-current",
+      sourceSessionIds: ["session-current"],
+      createdAt: new Date("2026-05-03T00:00:00.000Z").toISOString(),
+      updatedAt: new Date("2026-05-03T00:00:00.000Z").toISOString(),
+    });
+    const observed = makeMemory("observed-1", { status: "observed" });
+    const saveMemories = mock(async (_memories: Memory[]) => {});
+    const modulePath = "../../src/pipeline/status-updater.ts?spec=status-updater-test-observed";
+    const { propagateVerificationSignals } = await import(modulePath);
+
+    await propagateVerificationSignals(
+      makeSession([{ role: "assistant", content: "bun test exit_code: 0 all tests pass after replay fix" }]),
+      [current],
+      {
+        config: {} as never,
+        listAll: () => [observed],
+        saveMemories,
+      } as never,
+    );
+
+    const updated = saveMemories.mock.calls[0]?.[0] as Memory[];
+    expect(updated[0]?.id).toBe("observed-1");
+    expect(updated[0]?.status).toBe("verified");
+  });
+
+  it("does not rewrite memories that are already verified", async () => {
+    const saveMemories = mock(async (_memories: Memory[]) => {});
+    const modulePath = "../../src/pipeline/status-updater.ts?spec=status-updater-test-verified";
+    const { propagateVerificationSignals } = await import(modulePath);
+
+    await propagateVerificationSignals(
+      makeSession([{ role: "assistant", content: "bun test exit_code: 0 all tests pass" }]),
+      [makeMemory("current-1", { status: "observed" })],
+      {
+        config: {} as never,
+        listAll: () => [makeMemory("verified-1", { status: "verified" })],
+        saveMemories,
+      } as never,
+    );
+
+    expect(saveMemories).not.toHaveBeenCalled();
+  });
+
   it("does nothing when session has no verification signal", async () => {
     const saveMemories = mock(async (_memories: Memory[]) => {});
     const modulePath = "../../src/pipeline/status-updater.ts?spec=status-updater-test-2";

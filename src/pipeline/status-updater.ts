@@ -26,8 +26,8 @@ export async function propagateVerificationSignals(
   const sessionProject = normalizeProjectName(session.project ?? memories.find((memory) => memory.project)?.project);
   const sessionTimestamp = session.timestamp.getTime();
   const cutoff = sessionTimestamp - SEVEN_DAYS_MS;
-  const proposedCandidates = storage.listAll().filter((memory) => {
-    if (memory.status !== "proposed") return false;
+  const candidates = storage.listAll().filter((memory) => {
+    if (memory.status === "verified" || memory.status === "superseded") return false;
 
     const createdAtMs = new Date(memory.createdAt).getTime();
     if (!Number.isFinite(createdAtMs) || createdAtMs < cutoff || createdAtMs > sessionTimestamp + MAX_CLOCK_SKEW_MS) {
@@ -42,16 +42,16 @@ export async function propagateVerificationSignals(
     return true;
   });
 
-  if (proposedCandidates.length === 0) {
+  if (candidates.length === 0) {
     return 0;
   }
 
-  const associations = await findSemanticAssociations(memories, proposedCandidates, storage);
+  const associations = await findSemanticAssociations(memories, candidates, storage);
   if (associations.size === 0) {
     return 0;
   }
 
-  const upgraded = proposedCandidates
+  const upgraded = candidates
     .filter((candidate) => associations.has(candidate.id))
     .map((candidate) => ({
       ...candidate,

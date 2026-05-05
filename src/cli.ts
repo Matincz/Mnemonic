@@ -31,6 +31,7 @@ import { renderMemoryGraph, type GraphFormat } from "./graph";
 import { WatcherOrchestrator } from "./watcher";
 import { repairWikiLinks } from "./wiki/repair";
 import { summarizeMetrics } from "./pipeline/metrics";
+import { globalSalienceRecalibration } from "./pipeline/salience-normalize";
 
 export type ParsedCliCommand =
   | { name: "start" }
@@ -40,6 +41,7 @@ export type ParsedCliCommand =
   | { name: "status" }
   | { name: "stats" }
   | { name: "metrics"; sinceDays: number }
+  | { name: "recalibrate" }
   | { name: "backfill"; reset: boolean }
   | { name: "reset-data" }
   | { name: "reindex" }
@@ -73,6 +75,7 @@ export function parseCliArgs(args: string[]): ParsedCliCommand {
   if (head === "status") return { name: "status" };
   if (head === "stats") return { name: "stats" };
   if (head === "metrics") return { name: "metrics", sinceDays: parseSinceDays(args) };
+  if (head === "recalibrate") return { name: "recalibrate" };
   if (head === "backfill") return { name: "backfill", reset: args.includes("--reset") };
   if (head === "reset-data") return { name: "reset-data" };
   if (head === "reindex") return { name: "reindex" };
@@ -117,6 +120,7 @@ Usage:
   mnemonic status                 Show daemon and memory store status
   mnemonic stats                  Show memory statistics by layer/project/agent
   mnemonic metrics --since 7d     Show recent pipeline quality metrics
+  mnemonic recalibrate            Rebalance global salience percentiles
   mnemonic backfill [--reset]     Re-process all watched sessions (--reset clears first)
   mnemonic reset-data             Delete all generated data while keeping configured auth/model settings
   mnemonic reindex                Rebuild the vector embedding index
@@ -235,6 +239,12 @@ salienceP50: ${summary.salienceDistribution.p50.toFixed(3)}
 salienceP75: ${summary.salienceDistribution.p75.toFixed(3)}
 salienceP90: ${summary.salienceDistribution.p90.toFixed(3)}
 statusUpgraded: ${summary.statusUpgraded}
+verifiedRatio: ${summary.verifiedRatio.toFixed(3)}
+supersededAdded: ${summary.supersededAdded}
+contradictsAdded: ${summary.contradictsAdded}
+multiSourceRatio: ${summary.multiSourceRatio.toFixed(3)}
+projectCoverage: ${summary.projectCoverage.toFixed(3)}
+duplicateTitleGroups: ${summary.duplicateTitleGroups}
 topDedupProjects:
 ${formatDedupProjects(summary.topDedupProjects)}`);
 
@@ -332,6 +342,14 @@ async function runOptimize() {
   await storage.init();
   const result = await storage.optimize((message) => console.log(message));
   console.log(`Optimize backend=${result.backend} optimized=${result.optimized ? "yes" : "no"}`);
+  storage.close();
+}
+
+async function runRecalibrate() {
+  const { storage } = createApp();
+  await storage.init();
+  const result = await globalSalienceRecalibration(storage);
+  console.log(`Recalibrate complete: updated=${result.updated}/${result.checked}`);
   storage.close();
 }
 
@@ -786,6 +804,9 @@ export async function runCli(args = process.argv.slice(2)) {
       return;
     case "metrics":
       await printMetrics(command.sinceDays);
+      return;
+    case "recalibrate":
+      await runRecalibrate();
       return;
     case "backfill":
       await runBackfill(command.reset);

@@ -159,7 +159,7 @@ describe("weekly maintenance", () => {
 
     expect(storage.getMemory("old-low-episodic")).toBeNull();
     expect(storage.getMemory("linked-low-episodic")).not.toBeNull();
-    expect(storage.getMemory("old-proposed")?.salience).toBeCloseTo(0.6, 6);
+    expect(storage.getMemory("old-proposed")?.salience).toBeCloseTo(0.5, 6);
     storage.close();
   });
 });

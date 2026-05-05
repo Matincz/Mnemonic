@@ -78,6 +78,12 @@ export async function processSession(
     consolidatorSynthesized: 0,
     statusUpgraded: 0,
     contradictsSuperseded: 0,
+    verifiedRatio: 0,
+    supersededAdded: 0,
+    contradictsAdded: 0,
+    multiSourceRatio: 0,
+    projectCoverage: 0,
+    duplicateTitleGroups: 0,
     salienceDistribution: salienceDistribution([]),
   };
 
@@ -105,6 +111,8 @@ export async function processSession(
     log("[pipeline] ⚠ " + msg);
   }
   metrics.contradictsSuperseded = Math.max(0, countSuperseded(storage) - supersededBefore);
+  metrics.supersededAdded = metrics.contradictsSuperseded;
+  metrics.contradictsAdded = countNewContradicts(normalized, linked);
 
   log(`[pipeline] Consolidating durable knowledge...`);
   let consolidated = linked;
@@ -165,6 +173,7 @@ export async function processSession(
     log("[pipeline] ⚠ " + msg);
   }
 
+  populateCorpusMetrics(metrics, storage, persistedMemories);
   await recordPipelineMetricsBestEffort(storage, metrics, warnings, log);
 
   return {
@@ -206,6 +215,45 @@ function countNewLinks(before: Memory[], after: Memory[]) {
     const previous = beforeById.get(memory.id) ?? new Set<string>();
     return count + (memory.linkedMemoryIds ?? []).filter((id) => !previous.has(id)).length;
   }, 0);
+}
+
+function countNewContradicts(before: Memory[], after: Memory[]) {
+  const beforeById = new Map(before.map((memory) => [memory.id, new Set(memory.contradicts ?? [])]));
+  return after.reduce((count, memory) => {
+    const previous = beforeById.get(memory.id) ?? new Set<string>();
+    return count + (memory.contradicts ?? []).filter((id) => !previous.has(id)).length;
+  }, 0);
+}
+
+function populateCorpusMetrics(metrics: PipelineMetrics, storage: Storage, pending: Memory[]) {
+  const byId = new Map(storage.listAll().map((memory) => [memory.id, memory]));
+  for (const memory of pending) {
+    byId.set(memory.id, memory);
+  }
+
+  const memories = [...byId.values()];
+  const total = memories.length;
+  if (total === 0) {
+    return;
+  }
+
+  metrics.verifiedRatio = memories.filter((memory) => memory.status === "verified").length / total;
+  metrics.multiSourceRatio = memories.filter((memory) => (memory.sourceSessionIds ?? []).length > 1).length / total;
+  metrics.projectCoverage = memories.filter((memory) => Boolean(memory.project)).length / total;
+  metrics.duplicateTitleGroups = countDuplicateTitleGroups(memories);
+}
+
+function countDuplicateTitleGroups(memories: Memory[]) {
+  const counts = new Map<string, number>();
+  for (const memory of memories) {
+    const title = memory.title.trim().toLowerCase();
+    if (!title) {
+      continue;
+    }
+    counts.set(title, (counts.get(title) ?? 0) + 1);
+  }
+
+  return [...counts.values()].filter((count) => count > 1).length;
 }
 
 async function runStage<T>(

@@ -54,7 +54,7 @@ export async function reflect(memories: Memory[], storage: Storage): Promise<Mem
       sourceAgent: anchor.sourceAgent,
       createdAt: timestamp,
       updatedAt: timestamp,
-      status: "observed" as const,
+      status: "proposed" as const,
       sourceSessionIds: [anchor.sourceSessionId],
       supportingMemoryIds: memories.map((memory) => memory.id),
       salience: Math.max(0, Math.min(1, insight.salience)),

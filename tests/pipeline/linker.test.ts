@@ -43,12 +43,52 @@ function hit(memory: Memory): MemorySearchResult {
 }
 
 describe("linkBatch contradiction handling", () => {
+  it("adds heuristic contradictions when the LLM omits obvious polarity conflicts", async () => {
+    const incoming = makeMemory("incoming-heuristic", {
+      title: "Use HMAC tokens instead of SHA tokens",
+      summary: "Use HMAC-SHA-512 instead of SHA-256 for tokens.",
+      details: "Replace the old SHA-256 token rule with HMAC-SHA-512.",
+      createdAt: new Date("2026-05-04T00:00:00.000Z").toISOString(),
+    });
+    const old = makeMemory("old-heuristic", {
+      title: "Use SHA tokens",
+      summary: "Use SHA-256 for tokens.",
+      details: "The token rule uses SHA-256.",
+      createdAt: new Date("2026-05-02T00:00:00.000Z").toISOString(),
+      updatedAt: new Date("2026-05-02T00:00:00.000Z").toISOString(),
+    });
+
+    llmGenerateJSONMock.mockImplementation(async () => [
+      {
+        memory_id: "incoming-heuristic",
+        linked_ids: [],
+        contradicts_ids: [],
+        explanation: "missed contradiction",
+      },
+    ]);
+
+    const saveMemories = mock(async (_memories: Memory[]) => {});
+    const modulePath = "../../src/pipeline/linker.ts?spec=linker-test-heuristic";
+    const { linkBatch } = await import(modulePath);
+    const result = await linkBatch(
+      [incoming],
+      {
+        findRelatedMemoriesBatch: async () => [[hit(old)]],
+        saveMemories,
+      } as never,
+    );
+
+    expect(result[0]?.contradicts).toEqual(["old-heuristic"]);
+    expect(saveMemories).toHaveBeenCalledTimes(1);
+  });
+
   it("marks contradicted older memories as superseded and persists them", async () => {
     const incoming = makeMemory("incoming-1", {
       createdAt: new Date("2026-05-03T00:00:00.000Z").toISOString(),
       salience: 0.9,
     });
     const old = makeMemory("old-1", {
+      createdAt: new Date("2026-05-01T00:00:00.000Z").toISOString(),
       updatedAt: new Date("2026-05-01T00:00:00.000Z").toISOString(),
       salience: 0.6,
       status: "observed",

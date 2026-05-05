@@ -5,13 +5,14 @@ import { ingestPrompt } from "../llm/prompts";
 import { RawMemorySchema } from "../llm/schemas";
 import type { Storage } from "../storage";
 import { batchPairwiseSimilarity } from "./similarity";
-import { normalizeProjectName } from "./project";
+import { inferProjectFromText, normalizeProjectName } from "./project";
 import { calibrateSalience } from "./salience";
 
 const DEDUPLICATION_COMBINED_THRESHOLD = 0.78;
 const HIGH_CONFIDENCE_TITLE_THRESHOLD = 0.85;
 const CROSS_PROJECT_TITLE_THRESHOLD = 0.95;
 const CROSS_LAYER_LINK_THRESHOLD = 0.92;
+const EMBEDDING_ONLY_DUPLICATE_THRESHOLD = 0.88;
 
 export async function ingest(
   session: ParsedSession,
@@ -28,7 +29,7 @@ export async function ingest(
   if (metrics) {
     metrics.ingestedRaw = rawMemories.length;
   }
-  const project = normalizeProjectName(session.project);
+  const project = inferProject(session);
 
   const extracted = rawMemories.map((raw) => {
     const timestamp = session.timestamp.toISOString();
@@ -46,6 +47,7 @@ export async function ingest(
       updatedAt: timestamp,
       status: (raw.status ?? "observed") as Memory["status"],
       sourceSessionIds: [session.id],
+      sourceAgents: [session.source],
       supportingMemoryIds: [],
       salience: Math.max(0, Math.min(1, raw.salience)),
       linkedMemoryIds: [],
@@ -118,6 +120,20 @@ export async function ingest(
   return deduplicated;
 }
 
+function inferProject(session: ParsedSession) {
+  const explicit = normalizeProjectName(session.project);
+  if (explicit) {
+    return explicit;
+  }
+
+  return inferProjectFromText(
+    [
+      session.rawPath,
+      ...session.messages.map((message) => message.content),
+    ].join("\n"),
+  );
+}
+
 async function findDuplicateCandidate(
   memory: Memory,
   candidates: MemorySearchResult[],
@@ -147,6 +163,18 @@ async function findDuplicateCandidate(
     const summarySimilarity = similarities[offset + 1] ?? 0;
     const combinedSimilarity = similarities[offset + 2] ?? 0;
     const score = Math.max(titleSimilarity, summarySimilarity, combinedSimilarity);
+    const searchHit = candidates[index];
+    const embeddingOnlyScore = searchHit?.reasons.includes("semantic") ? searchHit.score : 0;
+
+    if (
+      embeddingOnlyScore >= EMBEDDING_ONLY_DUPLICATE_THRESHOLD &&
+      hasCompatibleProjectForEmbeddingMerge(memory.project, candidate.project)
+    ) {
+      if (!bestMatch || embeddingOnlyScore > bestMatch.score) {
+        bestMatch = { candidate, score: embeddingOnlyScore };
+      }
+      continue;
+    }
 
     if (candidate.layer !== memory.layer) {
       if (score >= CROSS_LAYER_LINK_THRESHOLD) {
@@ -178,6 +206,10 @@ async function findDuplicateCandidate(
   };
 }
 
+function hasCompatibleProjectForEmbeddingMerge(left?: string, right?: string) {
+  return left === right || !left || !right;
+}
+
 function shouldUpdateExistingMemory(incoming: Memory, existing: Memory) {
   if (statusPriority(incoming.status) > statusPriority(existing.status)) {
     return true;
@@ -205,6 +237,7 @@ function mergeIntoExistingMemory(incoming: Memory, existing: Memory): Memory {
     updatedAt: incoming.updatedAt,
     status: statusPriority(incoming.status) > statusPriority(existing.status) ? incoming.status : existing.status,
     sourceSessionIds: Array.from(new Set([...(existing.sourceSessionIds ?? []), ...incoming.sourceSessionIds])),
+    sourceAgents: Array.from(new Set([...(existing.sourceAgents ?? [existing.sourceAgent]), ...(incoming.sourceAgents ?? [incoming.sourceAgent])])),
     supportingMemoryIds: Array.from(new Set([...(existing.supportingMemoryIds ?? []), incoming.id])),
     salience: Math.max(existing.salience, incoming.salience),
     linkedMemoryIds: Array.from(new Set([...(existing.linkedMemoryIds ?? []), ...incoming.linkedMemoryIds])),

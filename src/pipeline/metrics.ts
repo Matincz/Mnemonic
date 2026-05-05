@@ -14,6 +14,12 @@ export interface PipelineMetrics {
   consolidatorSynthesized: number;
   statusUpgraded: number;
   contradictsSuperseded: number;
+  verifiedRatio: number;
+  supersededAdded: number;
+  contradictsAdded: number;
+  multiSourceRatio: number;
+  projectCoverage: number;
+  duplicateTitleGroups: number;
   salienceDistribution: { p25: number; p50: number; p75: number; p90: number };
 }
 
@@ -29,6 +35,12 @@ export interface MetricsSummary {
   };
   salienceDistribution: { p25: number; p50: number; p75: number; p90: number };
   statusUpgraded: number;
+  verifiedRatio: number;
+  supersededAdded: number;
+  contradictsAdded: number;
+  multiSourceRatio: number;
+  projectCoverage: number;
+  duplicateTitleGroups: number;
   topDedupProjects: Array<{ project: string; sessions: number; dedupRate: number; dedupMerged: number; dedupDropped: number; ingestedRaw: number }>;
 }
 
@@ -38,7 +50,7 @@ export async function recordMetrics(storage: Storage, metrics: PipelineMetrics):
 
 export async function summarizeMetrics(storage: Storage, sinceDays: number): Promise<MetricsSummary> {
   const rows = storage.db.listPipelineMetricsSince(new Date(Date.now() - sinceDays * 86_400_000).toISOString());
-  const metrics = rows.map((row) => row.payload);
+  const metrics = rows.map((row) => normalizeMetric(row.payload));
   const sessions = metrics.length;
 
   return {
@@ -58,6 +70,12 @@ export async function summarizeMetrics(storage: Storage, sinceDays: number): Pro
       p90: average(metrics.map((metric) => metric.salienceDistribution.p90)),
     },
     statusUpgraded: sum(metrics.map((metric) => metric.statusUpgraded)),
+    verifiedRatio: average(metrics.map((metric) => metric.verifiedRatio)),
+    supersededAdded: sum(metrics.map((metric) => metric.supersededAdded)),
+    contradictsAdded: sum(metrics.map((metric) => metric.contradictsAdded)),
+    multiSourceRatio: average(metrics.map((metric) => metric.multiSourceRatio)),
+    projectCoverage: average(metrics.map((metric) => metric.projectCoverage)),
+    duplicateTitleGroups: Math.max(0, ...metrics.map((metric) => metric.duplicateTitleGroups)),
     topDedupProjects: summarizeDedupProjects(metrics),
   };
 }
@@ -92,6 +110,18 @@ function summarizeDedupProjects(metrics: PipelineMetrics[]) {
     }))
     .sort((left, right) => right.dedupRate - left.dedupRate || right.ingestedRaw - left.ingestedRaw)
     .slice(0, 5);
+}
+
+function normalizeMetric(metric: PipelineMetrics): PipelineMetrics {
+  return {
+    ...metric,
+    verifiedRatio: metric.verifiedRatio ?? 0,
+    supersededAdded: metric.supersededAdded ?? metric.contradictsSuperseded ?? 0,
+    contradictsAdded: metric.contradictsAdded ?? 0,
+    multiSourceRatio: metric.multiSourceRatio ?? 0,
+    projectCoverage: metric.projectCoverage ?? 0,
+    duplicateTitleGroups: metric.duplicateTitleGroups ?? 0,
+  };
 }
 
 function average(values: number[]) {

@@ -118,6 +118,7 @@ function mergeMemoryGroup(group: Memory[]): Memory {
     updatedAt: latest.updatedAt,
     status: pickHighestStatus(group),
     sourceSessionIds: unique(group.flatMap((memory) => memory.sourceSessionIds)),
+    sourceAgents: unique(group.flatMap((memory) => memory.sourceAgents ?? [memory.sourceAgent])),
     supportingMemoryIds: unique(group.flatMap((memory) => memory.supportingMemoryIds)),
     salience: Math.max(...group.map((memory) => memory.salience)),
     linkedMemoryIds: unique(group.flatMap((memory) => memory.linkedMemoryIds)),
@@ -155,7 +156,7 @@ function longestText(values: string[]) {
   return values.slice().sort((left, right) => right.length - left.length)[0] ?? "";
 }
 
-function unique(values: string[]) {
+function unique<T extends string>(values: T[]) {
   return Array.from(new Set(values));
 }
 

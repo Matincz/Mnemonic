@@ -51,6 +51,12 @@ function metric(sessionId: string, overrides: Partial<PipelineMetrics> = {}): Pi
     consolidatorSynthesized: 0,
     statusUpgraded: 1,
     contradictsSuperseded: 0,
+    verifiedRatio: 0.1,
+    supersededAdded: 0,
+    contradictsAdded: 0,
+    multiSourceRatio: 0.2,
+    projectCoverage: 0.8,
+    duplicateTitleGroups: 1,
     salienceDistribution: { p25: 0.4, p50: 0.6, p75: 0.8, p90: 0.9 },
     ...overrides,
   };
@@ -69,6 +75,10 @@ describe("pipeline metrics", () => {
     expect(summary.sessions).toBe(3);
     expect(summary.averages.ingestedRaw).toBeCloseTo(35 / 3, 6);
     expect(summary.statusUpgraded).toBe(3);
+    expect(summary.verifiedRatio).toBeCloseTo(0.1, 6);
+    expect(summary.multiSourceRatio).toBeCloseTo(0.2, 6);
+    expect(summary.projectCoverage).toBeCloseTo(0.8, 6);
+    expect(summary.duplicateTitleGroups).toBe(1);
     expect(summary.salienceDistribution.p50).toBe(0.6);
     expect(summary.topDedupProjects[0]?.project).toBe("proj-b");
 

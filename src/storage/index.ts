@@ -7,6 +7,7 @@ import { MarkdownVault } from "./markdown";
 import { createVectorStore, type VectorStore } from "./vector";
 import type { Memory, MemoryLayer, MemorySearchResult } from "../types";
 import { deduplicateMemoryCorpus } from "./deduplicate";
+import { globalSalienceRecalibration } from "../pipeline/salience-normalize";
 
 export interface StorageOptions {
   config?: Config;
@@ -78,6 +79,36 @@ export class Storage {
       this.persistMemories(memories);
     });
     await this.materializeMemories(memories);
+  }
+
+  async updateStatus(id: string, status: Memory["status"], updates: Partial<Pick<Memory, "salience" | "updatedAt" | "linkedMemoryIds">> = {}) {
+    const memory = this.getMemory(id);
+    if (!memory) {
+      return false;
+    }
+
+    await this.saveMemory({
+      ...memory,
+      ...updates,
+      status,
+      updatedAt: updates.updatedAt ?? new Date().toISOString(),
+    });
+    return true;
+  }
+
+  async updateMemoryMetadata(memories: Memory[]) {
+    if (memories.length === 0) {
+      return;
+    }
+
+    await this.ensureInitialized();
+    this.db.withTransaction(() => {
+      this.persistMemories(memories);
+    });
+    for (const memory of memories) {
+      this.vault.writeMemory(memory);
+    }
+    this.refreshViews();
   }
 
   getMemory(id: string) {
@@ -371,6 +402,11 @@ export class Storage {
       }
     }
 
+    const recalibration = await globalSalienceRecalibration(this);
+    if (recalibration.updated > 0) {
+      log(`Recalibrated salience: updated=${recalibration.updated}/${recalibration.checked}`);
+    }
+
     const result = await this.vectorStore.optimize();
     if (result.details.length > 0) {
       log(result.details.join("; "));
@@ -387,6 +423,7 @@ export class Storage {
               ]
             : ["deduplicated=0"]
         ),
+        `salienceRecalibrated=${recalibration.updated}`,
         ...result.details,
       ],
     };
@@ -432,6 +469,7 @@ export class Storage {
     await this.vectorStore.reset();
     this.vault.resetGeneratedMemoryViews();
     this.refreshViews();
+    await globalSalienceRecalibration(this);
     log("Cleared memories, vector index, processed state, and generated memory views.");
   }
 

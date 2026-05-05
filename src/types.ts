@@ -39,6 +39,7 @@ export const MemorySchema = z.object({
   updatedAt: z.string().datetime(),
   status: z.enum(["proposed", "observed", "verified", "superseded"]),
   sourceSessionIds: z.array(z.string()),
+  sourceAgents: z.array(z.enum(["codex", "claude-code", "gemini", "opencode", "openclaw", "amp"])).optional(),
   supportingMemoryIds: z.array(z.string()),
   salience: z.number().min(0).max(1),
   linkedMemoryIds: z.array(z.string()),

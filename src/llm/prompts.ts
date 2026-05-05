@@ -253,7 +253,11 @@ Guidelines:
 - prefer 4-12 memories per useful session when the transcript contains multiple distinct durable points
 - it is better to slightly over-extract than to miss reusable engineering knowledge
 - do not store assistant suggestions as durable semantic/procedural memories unless the transcript shows they were applied, confirmed, tested, or adopted by the user
-- set status to "proposed" for unverified suggestions, "observed" for facts seen in the transcript, "verified" for outcomes confirmed by test/build/deploy results
+- set status to "proposed", "observed", or "verified" according to the standards below
+- set status using these standards:
+  - "proposed": suggested or inferred in conversation, but not confirmed by commands, tests, deployment, or other executable evidence in this session
+  - "observed": repeated in the transcript or explicitly stated by the user, but without executable evidence
+  - "verified": this session contains a command or request with an explicit success signal such as exit_code=0, HTTP 200, passed tests, git push success, curl success, or deployment success
 - do NOT extract version-check results (e.g. "codex version is 0.116.0"), model/session metadata (e.g. "using model X"), or transient environment context (timezone, cwd, shell) as standalone memories — only include them if they caused a real decision, bug, or workflow change
 - do NOT create single-fact translation memories (e.g. "term X means Y") unless the translation was debated, corrected, or affects code behavior
 - JSON only`;
@@ -334,6 +338,7 @@ Respond with JSON:
 Rules:
 - link only memories that materially support, extend, or provide context for the new memory
 - contradictions mean both memories cannot both be current/true without qualification
+- Example contradiction: candidate "use SHA-256 for tokens" vs new "use HMAC-SHA-512 instead of SHA-256 for tokens" returns contradicts_ids with the candidate id
 - keep the result conservative
 - JSON only`;
 }
@@ -376,6 +381,7 @@ Rules:
 - Only return entries for memories that have at least one real link or contradiction.
 - linked_ids and contradicts_ids must only reference candidates listed under the same memory.
 - Contradictions require a real conflict in current truth, not just a different perspective.
+- Example contradiction: candidate "use SHA-256 for tokens" vs new "use HMAC-SHA-512 instead of SHA-256 for tokens" returns contradicts_ids with the candidate id.
 - Keep the result conservative and avoid speculative links.
 - JSON only.`;
 }

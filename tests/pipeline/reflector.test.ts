@@ -128,6 +128,7 @@ describe("reflect", () => {
     expect(findRelatedMemoriesBatch).toHaveBeenCalledTimes(1);
     expect(llmGenerateJSONMock).toHaveBeenCalledTimes(1);
     expect(Array.isArray(results)).toBe(true);
+    expect(results.every((memory) => memory.status === "proposed")).toBe(true);
   });
 
   it("drops duplicate insights when semantic similarity passes the threshold", async () => {

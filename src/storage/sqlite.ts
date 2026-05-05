@@ -50,6 +50,7 @@ export class MemoryDB {
         updated_at TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'observed',
         source_session_ids TEXT NOT NULL DEFAULT '[]',
+        source_agents TEXT NOT NULL DEFAULT '[]',
         supporting_memory_ids TEXT NOT NULL DEFAULT '[]',
         salience REAL NOT NULL DEFAULT 0.5,
         linked_memory_ids TEXT NOT NULL DEFAULT '[]',
@@ -103,6 +104,7 @@ export class MemoryDB {
       "ALTER TABLE memories ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''",
       "ALTER TABLE memories ADD COLUMN status TEXT NOT NULL DEFAULT 'observed'",
       "ALTER TABLE memories ADD COLUMN source_session_ids TEXT NOT NULL DEFAULT '[]'",
+      "ALTER TABLE memories ADD COLUMN source_agents TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE memories ADD COLUMN supporting_memory_ids TEXT NOT NULL DEFAULT '[]'",
     ]) {
       try {
@@ -120,13 +122,13 @@ export class MemoryDB {
       INSERT OR REPLACE INTO memories
       (id, layer, title, summary, details, tags, project,
        source_session_id, source_agent, created_at, updated_at, status,
-       source_session_ids, supporting_memory_ids, salience, linked_memory_ids, contradicts)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       source_session_ids, source_agents, supporting_memory_ids, salience, linked_memory_ids, contradicts)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       mem.id, mem.layer, mem.title, mem.summary, mem.details,
       JSON.stringify(mem.tags), mem.project ?? null,
       mem.sourceSessionId, mem.sourceAgent, mem.createdAt, mem.updatedAt, mem.status,
-      JSON.stringify(mem.sourceSessionIds), JSON.stringify(mem.supportingMemoryIds), mem.salience,
+      JSON.stringify(mem.sourceSessionIds), JSON.stringify(mem.sourceAgents ?? [mem.sourceAgent]), JSON.stringify(mem.supportingMemoryIds), mem.salience,
       JSON.stringify(mem.linkedMemoryIds), JSON.stringify(mem.contradicts),
     );
 
@@ -179,7 +181,7 @@ export class MemoryDB {
 
   listByLayer(layer: MemoryLayer, limit = 50): Memory[] {
     const rows = this.db.prepare(
-      "SELECT * FROM memories WHERE layer = ? ORDER BY created_at DESC LIMIT ?",
+      "SELECT * FROM memories WHERE layer = ? AND status != 'superseded' ORDER BY created_at DESC LIMIT ?",
     ).all(layer, limit) as SqlMemoryRow[];
     return rows.map((row) => rowToMemory(row));
   }

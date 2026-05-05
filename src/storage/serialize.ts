@@ -14,6 +14,7 @@ export interface SqlMemoryRow {
   updated_at: string;
   status: string;
   source_session_ids: string;
+  source_agents?: string;
   supporting_memory_ids: string;
   salience: number;
   linked_memory_ids: string;
@@ -35,6 +36,7 @@ export function rowToMemory(row: SqlMemoryRow): Memory {
     updatedAt: row.updated_at || row.created_at,
     status: (row.status || "observed") as Memory["status"],
     sourceSessionIds: JSON.parse(row.source_session_ids || "[]") as string[],
+    sourceAgents: JSON.parse(row.source_agents || "[]") as Memory["sourceAgents"],
     supportingMemoryIds: JSON.parse(row.supporting_memory_ids || "[]") as string[],
     salience: row.salience,
     linkedMemoryIds: JSON.parse(row.linked_memory_ids) as string[],
