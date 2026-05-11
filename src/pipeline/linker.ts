@@ -41,7 +41,10 @@ export async function linkBatch(memories: Memory[], storage: Storage): Promise<M
     return memories;
   }
 
-  const results = await llmGenerateJSON(linkBatchPrompt(items), BatchLinkResultSchema);
+  const results = await llmGenerateJSON(linkBatchPrompt(items), BatchLinkResultSchema, {
+    component: "linker",
+    schemaName: "BatchLinkResultSchema",
+  });
   const resultMap = new Map(results.map((result) => [result.memory_id, result]));
   const supersededUpdates = new Map<string, Memory>();
 
@@ -109,7 +112,10 @@ export async function linkWithPrompt(memory: Memory, storage: Storage): Promise<
 
   if (candidates.length === 0) return memory;
 
-  const result = await llmGenerateJSON(linkPrompt(memory, candidates.slice(0, 10)), LinkResultSchema);
+  const result = await llmGenerateJSON(linkPrompt(memory, candidates.slice(0, 10)), LinkResultSchema, {
+    component: "linker",
+    schemaName: "LinkResultSchema",
+  });
   const linkedIds = result.linked_ids ?? [];
   const contradictsIds = result.contradicts_ids ?? [];
 

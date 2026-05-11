@@ -1,5 +1,6 @@
 import type { Memory, ParsedSession, PipelineResult } from "../types";
 import { createHash } from "crypto";
+import { nanoid } from "nanoid";
 import type { Storage } from "../storage";
 import type { WikiEngine } from "../wiki/engine";
 import type { IndexManager } from "../wiki/index-manager";
@@ -14,6 +15,7 @@ import { reflect } from "./reflector";
 import { wikiIngest } from "./wiki-ingestor";
 import { propagateVerificationSignals } from "./status-updater";
 import { recordMetrics, salienceDistribution, type PipelineMetrics } from "./metrics";
+import { appendStructuredLog, getLogger } from "../logger";
 
 export interface WikiDeps {
   engine: WikiEngine;
@@ -31,19 +33,35 @@ type CheckpointStage =
   | "status-updating"
   | "wiki";
 
+type PipelineStageName =
+  | "evaluate"
+  | "extract"
+  | "normalize"
+  | "link"
+  | "consolidate"
+  | "reflect"
+  | "propagate-verification"
+  | "wiki-ingest"
+  | "metrics";
+
+const pipelineLogger = getLogger("pipeline");
+
 export async function processSession(
   session: ParsedSession,
   storage: Storage,
   wiki: WikiDeps,
-  log: (msg: string) => void = console.log,
+  log: (msg: string) => void = (message) => pipelineLogger.info(message.replace(/^\[pipeline\]\s*/, "")),
   checkpointKey = buildSessionCheckpointKey(session),
 ): Promise<PipelineResult> {
+  const traceId = nanoid(12);
   log(`[pipeline] Evaluating session ${session.id} from ${session.source}`);
 
-  const evalResult = await runStage(
+  const evalResult = await runLoggedStage(
     storage,
     session.id,
     "evaluating",
+    "evaluate",
+    traceId,
     checkpointKey,
     () => evaluate(session),
   );
@@ -88,10 +106,18 @@ export async function processSession(
   };
 
   log(`[pipeline] Extracting memories...`);
-  const extracted = await runStage(storage, session.id, "ingesting", checkpointKey, () => ingest(session, storage, metrics));
+  const extracted = await runLoggedStage(storage, session.id, "ingesting", "extract", traceId, checkpointKey, () =>
+    ingest(session, storage, metrics),
+  );
 
+  const normalizeStartedAt = Date.now();
   const normalized = normalize(extracted);
   log(`[pipeline] Normalized ${extracted.length} → ${normalized.length} memories`);
+  recordPipelineEvent(traceId, session.id, "normalize", "end", {
+    durationMs: Date.now() - normalizeStartedAt,
+    inputCount: extracted.length,
+    memoryCount: normalized.length,
+  });
 
   const warnings: string[] = [];
   metrics.ingestedRaw ||= extracted.length;
@@ -103,7 +129,9 @@ export async function processSession(
   let linked = normalized;
   const supersededBefore = countSuperseded(storage);
   try {
-    linked = await runStage(storage, session.id, "linking", checkpointKey, () => linkBatch(normalized, storage));
+    linked = await runLoggedStage(storage, session.id, "linking", "link", traceId, checkpointKey, () =>
+      linkBatch(normalized, storage),
+    );
     metrics.crossLayerLinked = countNewLinks(normalized, linked);
   } catch (err) {
     const msg = "linking failed: " + (err instanceof Error ? err.message : String(err));
@@ -117,7 +145,9 @@ export async function processSession(
   log(`[pipeline] Consolidating durable knowledge...`);
   let consolidated = linked;
   try {
-    consolidated = await runStage(storage, session.id, "consolidating", checkpointKey, () => consolidate(linked, storage));
+    consolidated = await runLoggedStage(storage, session.id, "consolidating", "consolidate", traceId, checkpointKey, () =>
+      consolidate(linked, storage),
+    );
     metrics.consolidatorMerged = Math.max(0, linked.length - consolidated.length);
     metrics.consolidatorSynthesized = Math.max(0, consolidated.length - linked.length);
   } catch (err) {
@@ -131,7 +161,9 @@ export async function processSession(
 
   try {
     log("[pipeline] Reflecting insights...");
-    insights = await runStage(storage, session.id, "reflecting", checkpointKey, () => reflect(consolidated, storage));
+    insights = await runLoggedStage(storage, session.id, "reflecting", "reflect", traceId, checkpointKey, () =>
+      reflect(consolidated, storage),
+    );
     metrics.reflectorAdded = insights.length;
   } catch (err) {
     const msg = "reflect failed: " + (err instanceof Error ? err.message : String(err));
@@ -144,7 +176,7 @@ export async function processSession(
 
   try {
     log("[pipeline] Propagating verification signals...");
-    await runStage(storage, session.id, "status-updating", checkpointKey, async () => {
+    await runLoggedStage(storage, session.id, "status-updating", "propagate-verification", traceId, checkpointKey, async () => {
       metrics.statusUpgraded = await propagateVerificationSignals(session, persistedMemories, storage);
       return { done: true };
     });
@@ -156,7 +188,7 @@ export async function processSession(
 
   try {
     log("[pipeline] Wiki ingesting...");
-    const operations = await runStage(storage, session.id, "wiki", checkpointKey, () =>
+    const operations = await runLoggedStage(storage, session.id, "wiki", "wiki-ingest", traceId, checkpointKey, () =>
       wikiIngest(session, wiki.engine, wiki.index, wiki.log, wiki.registry),
     );
     log("[pipeline] Done. Updated " + operations.length + " wiki pages.");
@@ -174,7 +206,7 @@ export async function processSession(
   }
 
   populateCorpusMetrics(metrics, storage, persistedMemories);
-  await recordPipelineMetricsBestEffort(storage, metrics, warnings, log);
+  await recordPipelineMetricsBestEffort(storage, metrics, warnings, log, traceId);
 
   return {
     sessionId: session.id,
@@ -191,14 +223,80 @@ async function recordPipelineMetricsBestEffort(
   metrics: PipelineMetrics,
   warnings: string[],
   log: (msg: string) => void,
+  traceId: string,
 ) {
+  const startedAt = Date.now();
+  recordPipelineEvent(traceId, metrics.sessionId, "metrics", "start");
   try {
     await recordMetrics(storage, metrics);
+    recordPipelineEvent(traceId, metrics.sessionId, "metrics", "end", { durationMs: Date.now() - startedAt });
   } catch (err) {
     const msg = "metrics failed: " + (err instanceof Error ? err.message : String(err));
     warnings.push(msg);
     log("[pipeline] ⚠ " + msg);
+    recordPipelineEvent(traceId, metrics.sessionId, "metrics", "error", {
+      durationMs: Date.now() - startedAt,
+      error: msg,
+    });
   }
+}
+
+async function runLoggedStage<T>(
+  storage: Storage,
+  sessionId: string,
+  checkpointStage: CheckpointStage,
+  stage: PipelineStageName,
+  traceId: string,
+  checkpointKey: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const startedAt = Date.now();
+  recordPipelineEvent(traceId, sessionId, stage, "start");
+  try {
+    const result = await runStage(storage, sessionId, checkpointStage, checkpointKey, action);
+    recordPipelineEvent(traceId, sessionId, stage, "end", {
+      durationMs: Date.now() - startedAt,
+      ...stageResultMeta(stage, result),
+    });
+    return result;
+  } catch (error) {
+    recordPipelineEvent(traceId, sessionId, stage, "error", {
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
+
+function recordPipelineEvent(
+  traceId: string,
+  sessionId: string,
+  stage: PipelineStageName,
+  event: "start" | "end" | "error",
+  extra: Record<string, unknown> = {},
+) {
+  appendStructuredLog("pipeline", {
+    ts: new Date().toISOString(),
+    traceId,
+    sessionId,
+    stage,
+    event,
+    ...extra,
+  });
+}
+
+function stageResultMeta(stage: PipelineStageName, result: unknown): Record<string, unknown> {
+  if (stage === "evaluate" && typeof result === "object" && result !== null && "shouldProcess" in result) {
+    const evaluation = result as { shouldProcess?: boolean; reason?: string };
+    return {
+      result: evaluation.shouldProcess ? "process" : "skipped",
+      reason: evaluation.reason,
+    };
+  }
+  if (Array.isArray(result)) {
+    return { memoryCount: result.length };
+  }
+  return {};
 }
 
 function countSuperseded(storage: Storage) {

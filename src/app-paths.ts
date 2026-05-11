@@ -16,6 +16,7 @@ export interface AppPaths {
   vaultPath: string;
   sqlitePath: string;
   settingsPath: string;
+  logsDir: string;
   ipcDir: string;
   ipcStatusPath: string;
   ipcEventsPath: string;
@@ -62,6 +63,7 @@ export function resolveAppPaths(input: AppPathsInput = {}): AppPaths {
     vaultPath: join(dataRoot, "vault"),
     sqlitePath: join(dataDir, "memory.db"),
     settingsPath: join(configRoot, "settings.json"),
+    logsDir: join(dataRoot, "logs"),
     ipcDir,
     ipcStatusPath: join(ipcDir, "status.json"),
     ipcEventsPath: join(ipcDir, "events.ndjson"),

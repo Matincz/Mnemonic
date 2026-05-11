@@ -1,4 +1,8 @@
 import { describe, expect, it, mock, beforeEach } from "bun:test";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { RuntimeIPC } from "../../src/ipc/runtime";
 import type { PipelineResult, ParsedSession } from "../../src/types";
 
 const processSessionMock = mock(async (session: ParsedSession): Promise<PipelineResult> => ({
@@ -99,5 +103,39 @@ describe("WatcherOrchestrator", () => {
 
     expect(processSessionMock).toHaveBeenCalledTimes(2);
     expect((storage as { recordProcessedSession: ReturnType<typeof mock> }).recordProcessedSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("emits session-processed and clears stale status errors on successful sessions", async () => {
+    const { WatcherOrchestrator } = await import("../../src/watcher");
+    const root = mkdtempSync(join(tmpdir(), "mnemonic-watcher-ipc-"));
+    const runtime = new RuntimeIPC(join(root, "status.json"), join(root, "events.ndjson"), root);
+    runtime.reset();
+    runtime.writeStatus({ state: "error", message: "Previous failure", lastError: "stale error" });
+
+    try {
+      const orchestrator = new WatcherOrchestrator(
+        makeStorage(),
+        makeWiki(),
+        runtime,
+        undefined as never,
+        {
+          amp: {
+            listRecentThreads: mock(async () => ["first"]),
+            parse: mock(async () => makeSession("amp-first", "2026-04-20T00:00:00.000Z")),
+            watchPaths: () => [],
+          },
+        } as never,
+      );
+
+      await orchestrator.pollAmp();
+
+      const status = runtime.readStatus();
+      const [event] = runtime.readRecentEvents(5);
+      expect(status.lastError).toBeUndefined();
+      expect(event?.kind).toBe("session-processed");
+      expect(event?.sessionId).toBe("amp-first");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

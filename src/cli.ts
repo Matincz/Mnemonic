@@ -1,6 +1,6 @@
 import { createInterface } from "readline/promises";
 import { stdin as input, stdout as output } from "process";
-import { mkdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { getAppPaths, resolveAppPaths } from "./app-paths";
 import { createApp } from "./app";
@@ -41,6 +41,7 @@ export type ParsedCliCommand =
   | { name: "status" }
   | { name: "stats" }
   | { name: "metrics"; sinceDays: number }
+  | { name: "logs"; options: LogsOptions }
   | { name: "recalibrate" }
   | { name: "backfill"; reset: boolean }
   | { name: "reset-data" }
@@ -62,6 +63,15 @@ export type ParsedCliCommand =
   | { name: "unknown"; input: string }
   | { name: "help" };
 
+interface LogsOptions {
+  lines: number;
+  kind: "mnemonic" | "llm" | "pipeline";
+  follow: boolean;
+  date?: string;
+  level?: "debug" | "info" | "warn" | "error";
+  path: boolean;
+}
+
 export function parseCliArgs(args: string[]): ParsedCliCommand {
   const [head, second, third, ...rest] = args;
   const tail = [second, third, ...rest].filter(Boolean).join(" ").trim();
@@ -75,6 +85,7 @@ export function parseCliArgs(args: string[]): ParsedCliCommand {
   if (head === "status") return { name: "status" };
   if (head === "stats") return { name: "stats" };
   if (head === "metrics") return { name: "metrics", sinceDays: parseSinceDays(args) };
+  if (head === "logs") return { name: "logs", options: parseLogsOptions(args.slice(1)) };
   if (head === "recalibrate") return { name: "recalibrate" };
   if (head === "backfill") return { name: "backfill", reset: args.includes("--reset") };
   if (head === "reset-data") return { name: "reset-data" };
@@ -120,6 +131,7 @@ Usage:
   mnemonic status                 Show daemon and memory store status
   mnemonic stats                  Show memory statistics by layer/project/agent
   mnemonic metrics --since 7d     Show recent pipeline quality metrics
+  mnemonic logs [opts]            Show recent logs
   mnemonic recalibrate            Rebalance global salience percentiles
   mnemonic backfill [--reset]     Re-process all watched sessions (--reset clears first)
   mnemonic reset-data             Delete all generated data while keeping configured auth/model settings
@@ -152,6 +164,7 @@ sqlitePath: ${paths.sqlitePath}
 settingsPath: ${paths.settingsPath}
 ipcStatusPath: ${paths.ipcStatusPath}
 ipcEventsPath: ${paths.ipcEventsPath}
+logsDir: ${paths.logsDir}
 legacyRoot: ${paths.legacyRoot}`);
 }
 
@@ -249,6 +262,62 @@ topDedupProjects:
 ${formatDedupProjects(summary.topDedupProjects)}`);
 
   storage.close();
+}
+
+async function printLogs(options: LogsOptions) {
+  const paths = getAppPaths();
+  if (options.path) {
+    console.log(paths.logsDir);
+    return;
+  }
+
+  const date = options.date ?? localDate(new Date());
+  const extension = options.kind === "mnemonic" ? "log" : "ndjson";
+  const filePath = join(paths.logsDir, `${options.kind}-${date}.${extension}`);
+  let previousSize = 0;
+
+  const printCurrent = () => {
+    if (!existsSync(filePath)) {
+      console.log(`No log file found: ${filePath}`);
+      return;
+    }
+    const content = readFileSync(filePath, "utf8");
+    const output = formatLogOutput(content, options);
+    if (output) {
+      console.log(output);
+    }
+    previousSize = content.length;
+  };
+
+  printCurrent();
+  if (!options.follow) {
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    const interval = setInterval(() => {
+      if (!existsSync(filePath)) {
+        return;
+      }
+      const content = readFileSync(filePath, "utf8");
+      if (content.length <= previousSize) {
+        return;
+      }
+      const appended = content.slice(previousSize);
+      const output = formatLogOutput(appended, { ...options, lines: Number.MAX_SAFE_INTEGER });
+      if (output) {
+        console.log(output);
+      }
+      previousSize = content.length;
+    }, 1000);
+
+    const stop = () => {
+      clearInterval(interval);
+      process.off("SIGINT", stop);
+      resolve();
+    };
+    process.on("SIGINT", stop);
+  });
 }
 
 async function runSearch(query: string) {
@@ -490,6 +559,7 @@ async function synthesizeQueryAnswer(
         })),
         wikiResult.sources,
       ),
+      { component: "cli.query" },
     );
   } catch {
     return wikiResult.answer;
@@ -681,6 +751,99 @@ function parseSinceDays(args: string[]) {
   return Math.max(1, Number(match[1]));
 }
 
+function parseLogsOptions(args: string[]): LogsOptions {
+  const options: LogsOptions = {
+    lines: 100,
+    kind: "mnemonic",
+    follow: false,
+    path: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "-n") {
+      const parsed = Number(args[index + 1]);
+      if (Number.isInteger(parsed) && parsed > 0) {
+        options.lines = parsed;
+      }
+      index += 1;
+    } else if (arg?.startsWith("-n") && arg.length > 2) {
+      const parsed = Number(arg.slice(2));
+      if (Number.isInteger(parsed) && parsed > 0) {
+        options.lines = parsed;
+      }
+    } else if (arg === "--llm") {
+      options.kind = "llm";
+    } else if (arg === "--pipeline") {
+      options.kind = "pipeline";
+    } else if (arg === "--follow") {
+      options.follow = true;
+    } else if (arg === "--date") {
+      options.date = args[index + 1];
+      index += 1;
+    } else if (arg === "--level") {
+      const level = args[index + 1];
+      if (level === "debug" || level === "info" || level === "warn" || level === "error") {
+        options.level = level;
+      }
+      index += 1;
+    } else if (arg === "--path") {
+      options.path = true;
+    }
+  }
+
+  return options;
+}
+
+function formatLogOutput(content: string, options: LogsOptions) {
+  let lines = content.split("\n").filter(Boolean);
+  if (options.kind === "mnemonic" && options.level) {
+    lines = lines.filter((line) => logLineMatchesLevel(line, options.level!));
+  }
+  lines = lines.slice(-options.lines);
+  if (options.kind === "mnemonic") {
+    return lines.join("\n");
+  }
+  return lines.map(formatNdjsonLogLine).join("\n");
+}
+
+function formatNdjsonLogLine(line: string) {
+  try {
+    const record = JSON.parse(line) as Record<string, unknown>;
+    const fields = [
+      record.ts,
+      record.stage ? `stage=${record.stage}` : undefined,
+      record.event ? `event=${record.event}` : undefined,
+      record.durationMs !== undefined ? `durationMs=${record.durationMs}` : undefined,
+      record.ok !== undefined ? `ok=${record.ok}` : undefined,
+      record.callerComponent ? `component=${record.callerComponent}` : undefined,
+      record.error ? `error=${JSON.stringify(record.error)}` : undefined,
+    ].filter(Boolean);
+    return fields.join(" ");
+  } catch {
+    return line;
+  }
+}
+
+function logLineMatchesLevel(line: string, level: NonNullable<LogsOptions["level"]>) {
+  const weights: Record<NonNullable<LogsOptions["level"]>, number> = {
+    debug: 10,
+    info: 20,
+    warn: 30,
+    error: 40,
+  };
+  const match = line.match(/\s(DEBUG|INFO|WARN|ERROR)\s/);
+  const actual = match?.[1]?.toLowerCase() as NonNullable<LogsOptions["level"]> | undefined;
+  return actual ? weights[actual] >= weights[level] : false;
+}
+
+function localDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function formatDedupProjects(projects: Array<{ project: string; sessions: number; dedupRate: number; dedupMerged: number; dedupDropped: number; ingestedRaw: number }>) {
   if (projects.length === 0) {
     return "- (none)";
@@ -804,6 +967,9 @@ export async function runCli(args = process.argv.slice(2)) {
       return;
     case "metrics":
       await printMetrics(command.sinceDays);
+      return;
+    case "logs":
+      await printLogs(command.options);
       return;
     case "recalibrate":
       await runRecalibrate();

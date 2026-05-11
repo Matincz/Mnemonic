@@ -43,7 +43,10 @@ export async function consolidate(memories: Memory[], storage: Storage): Promise
     return memories;
   }
 
-  const results = await llmGenerateJSON(consolidateBatchPrompt(items), BatchConsolidationResultSchema);
+  const results = await llmGenerateJSON(consolidateBatchPrompt(items), BatchConsolidationResultSchema, {
+    component: "consolidator",
+    schemaName: "BatchConsolidationResultSchema",
+  });
   const resultMap = new Map(
     results
       .filter((result) => typeof result.memory_id === "string" && result.memory_id.length > 0)

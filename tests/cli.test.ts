@@ -72,6 +72,21 @@ describe("cli parsing", () => {
     });
   });
 
+  it("parses logs command", async () => {
+    const { parseCliArgs } = await import("../src/cli");
+
+    expect(parseCliArgs(["logs", "--pipeline", "-n", "20", "--level", "warn"])).toEqual({
+      name: "logs",
+      options: {
+        kind: "pipeline",
+        lines: 20,
+        follow: false,
+        path: false,
+        level: "warn",
+      },
+    });
+  });
+
   it("parses recalibrate command", async () => {
     const { parseCliArgs } = await import("../src/cli");
 

@@ -1,4 +1,8 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { configureLogger } from "../../src/logger";
 import type { Memory, ParsedSession, MemorySearchResult } from "../../src/types";
 
 const llmGenerateJSONMock = mock(async (_prompt: string): Promise<unknown> => []);
@@ -337,6 +341,14 @@ describe("ingest", () => {
   });
 
   it("keeps extracted memories when related-memory lookup fails", async () => {
+    const logsDir = mkdtempSync(join(tmpdir(), "mnemonic-ingestor-test-"));
+    configureLogger({
+      logsDir,
+      level: "debug",
+      console: false,
+      retentionDays: 7,
+      dateProvider: () => new Date("2026-05-11T12:00:00.000Z"),
+    });
     llmGenerateJSONMock.mockImplementation(async () => [
       {
         layer: "semantic",
@@ -356,12 +368,6 @@ describe("ingest", () => {
       },
     ]);
 
-    const originalWarn = console.warn;
-    const warnings: string[] = [];
-    console.warn = (message?: unknown) => {
-      warnings.push(String(message ?? ""));
-    };
-
     try {
       const { ingest } = await import("../../src/pipeline/ingestor");
       const memories = await ingest(makeSession(), {
@@ -372,9 +378,11 @@ describe("ingest", () => {
 
       expect(memories).toHaveLength(2);
       expect(memories.map((memory) => memory.title)).toEqual(["Auth cache rule", "Replay failed ingest"]);
-      expect(warnings.join("\n")).toContain("related memory lookup failed: lookup failed");
+      const log = readFileSync(join(logsDir, "mnemonic-2026-05-11.log"), "utf8");
+      expect(log).toContain("related memory lookup failed");
+      expect(log).toContain("lookup failed");
     } finally {
-      console.warn = originalWarn;
+      rmSync(logsDir, { recursive: true, force: true });
     }
   });
 });

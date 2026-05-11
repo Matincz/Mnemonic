@@ -26,7 +26,10 @@ export async function reflect(memories: Memory[], storage: Storage): Promise<Mem
   );
   const context = await buildReflectionContext(memories, storage, fallbackContext);
 
-  const insights = await llmGenerateJSON(reflectPrompt(memories, context), RawInsightSchema);
+  const insights = await llmGenerateJSON(reflectPrompt(memories, context), RawInsightSchema, {
+    component: "reflector",
+    schemaName: "RawInsightSchema",
+  });
   if (!Array.isArray(insights) || insights.length === 0) {
     return [];
   }

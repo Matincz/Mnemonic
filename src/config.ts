@@ -19,9 +19,13 @@ export interface Config {
   sqlitePath: string;
   lanceDir: string;
   settingsPath: string;
+  logsDir: string;
   ipcDir: string;
   ipcStatusPath: string;
   ipcEventsPath: string;
+  logLevel: "debug" | "info" | "warn" | "error";
+  logRetentionDays: number;
+  logConsole: boolean;
   watchDebounceMs: number;
   maxSessionAgeDays: number;
   vectorBackend: "sqlite" | "lancedb";
@@ -59,9 +63,13 @@ export function loadConfig(input: LoadConfigInput = {}): Config {
     sqlitePath: appPaths.sqlitePath,
     lanceDir: env.MNEMONIC_LANCE_DIR ?? appPaths.lanceDir,
     settingsPath: appPaths.settingsPath,
+    logsDir: appPaths.logsDir,
     ipcDir: appPaths.ipcDir,
     ipcStatusPath: appPaths.ipcStatusPath,
     ipcEventsPath: appPaths.ipcEventsPath,
+    logLevel: parseLogLevel(env.MNEMONIC_LOG_LEVEL),
+    logRetentionDays: parsePositiveInteger(env.MNEMONIC_LOG_RETENTION_DAYS, 7),
+    logConsole: parseBoolean(env.MNEMONIC_LOG_CONSOLE, true),
     watchDebounceMs: 2000,
     maxSessionAgeDays: 7,
     vectorBackend: env.MNEMONIC_VECTOR_BACKEND === "sqlite" ? "sqlite" : "lancedb",
@@ -85,3 +93,25 @@ export function loadConfig(input: LoadConfigInput = {}): Config {
 }
 
 export const config = loadConfig();
+
+function parseLogLevel(value: string | undefined): Config["logLevel"] {
+  return value === "debug" || value === "info" || value === "warn" || value === "error" ? value : "info";
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseBoolean(value: string | undefined, fallback: boolean) {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (value === "false" || value === "0") {
+    return false;
+  }
+  if (value === "true" || value === "1") {
+    return true;
+  }
+  return fallback;
+}

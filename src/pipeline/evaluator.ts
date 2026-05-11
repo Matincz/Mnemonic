@@ -24,7 +24,10 @@ export async function evaluate(session: ParsedSession): Promise<{
     return { shouldProcess: false, reason: "Content too short" };
   }
 
-  const result = await llmGenerateJSON(evaluatePrompt(session), EvalResultSchema);
+  const result = await llmGenerateJSON(evaluatePrompt(session), EvalResultSchema, {
+    component: "evaluator",
+    schemaName: "EvalResultSchema",
+  });
   return {
     shouldProcess: result.worth_remembering,
     reason: result.reason,

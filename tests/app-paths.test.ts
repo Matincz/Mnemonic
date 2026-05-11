@@ -16,6 +16,7 @@ describe("app paths", () => {
     expect(paths.sqlitePath).toBe("/Users/tester/Library/Application Support/Mnemonic/data/memory.db");
     expect(paths.lanceDir).toBe("/Users/tester/Library/Application Support/Mnemonic/data/lance");
     expect(paths.vaultPath).toBe("/Users/tester/Library/Application Support/Mnemonic/vault");
+    expect(paths.logsDir).toBe("/Users/tester/Library/Application Support/Mnemonic/logs");
     expect(paths.legacyRoot).toBe("/Users/tester/Desktop/Memory agent");
     expect(Object.keys(paths).sort()).toEqual([
       "appName",
@@ -30,6 +31,7 @@ describe("app paths", () => {
       "legacyRoot",
       "legacySettingsPath",
       "legacyVaultPath",
+      "logsDir",
       "migrationMarkerPath",
       "settingsPath",
       "sqlitePath",

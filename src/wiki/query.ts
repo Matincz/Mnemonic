@@ -28,7 +28,10 @@ export class WikiQuery {
 
   async query(question: string): Promise<WikiQueryResult> {
     const indexContent = this.indexManager.getIndex();
-    const { pages } = await llmGenerateJSON(wikiSelectPagesPrompt(indexContent, question), WikiSelectionSchema);
+    const { pages } = await llmGenerateJSON(wikiSelectPagesPrompt(indexContent, question), WikiSelectionSchema, {
+      component: "wiki-query",
+      schemaName: "WikiSelectionSchema",
+    });
 
     const pageContents: Array<{ path: string; content: string }> = [];
     const sourcePages: WikiPage[] = [];
@@ -53,7 +56,7 @@ export class WikiQuery {
       };
     }
 
-    const answer = await llmGenerate(wikiAnswerPrompt(question, pageContents));
+    const answer = await llmGenerate(wikiAnswerPrompt(question, pageContents), { component: "wiki-query" });
     return {
       answer,
       sources: sourcePages.map((page) => ({

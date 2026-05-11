@@ -12,6 +12,9 @@ import type { IndexManager } from "../wiki/index-manager";
 import type { WikiLog } from "../wiki/log";
 import type { EntityRegistry } from "../wiki/registry";
 import type { WikiOperation } from "../wiki/types";
+import { getLogger } from "../logger";
+
+const logger = getLogger("pipeline.wiki");
 
 export async function wikiIngest(
   session: ParsedSession,
@@ -26,6 +29,7 @@ export async function wikiIngest(
   const operations = await llmGenerateJSON(
     wikiIngestPrompt(session, schemaContent, indexContent, existingPages),
     WikiOperationSchema,
+    { component: "wiki-ingest", schemaName: "WikiOperationSchema" },
   );
   const validOperations = operations.filter(isValidWikiOperation);
 
@@ -41,9 +45,13 @@ export async function wikiIngest(
   if (issues.length > 0) {
     const queue = new WikiLintTaskQueue(engine.getRootPath());
     const result = queue.sync(issues, session.id);
-    console.log(
-      `[wiki-lint] queued ${result.total} task(s) (${result.errors} error(s), ${result.warnings} warning(s), +${result.added}, -${result.resolved})`,
-    );
+    logger.warn("wiki-lint queued tasks", {
+      total: result.total,
+      errors: result.errors,
+      warnings: result.warnings,
+      added: result.added,
+      resolved: result.resolved,
+    });
   }
 
   log.append({

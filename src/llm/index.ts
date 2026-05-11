@@ -9,10 +9,13 @@ import {
   getCodexApiEndpoint,
   refreshOAuthTokensIfNeeded,
 } from "./openai-auth";
+import { recordLlmCall } from "./log";
 
 export interface LlmCallOptions {
   settings?: Settings | null;
   config?: Config;
+  component?: string;
+  schemaName?: string;
 }
 
 function getApiCredentials(settings: Settings | null, config: Config): { apiKey: string; baseURL: string } {
@@ -91,17 +94,40 @@ async function generateWithOAuth(prompt: string, settings: OAuthSettings): Promi
 export async function llmGenerate(prompt: string, options: LlmCallOptions = {}): Promise<string> {
   const settings = options.settings ?? loadSettings();
   const config = options.config ?? loadConfig();
-  if (settings?.authMode === "oauth") {
-    return generateWithOAuth(prompt, settings);
-  }
+  const startedAt = Date.now();
+  let response = "";
 
-  const openai = createApiClient(settings, config);
-  const { text } = await generateText({
-    model: openai(getChatModel(settings, config)),
-    prompt,
-    temperature: 0.3,
-  });
-  return text;
+  try {
+    if (settings?.authMode === "oauth") {
+      response = await generateWithOAuth(prompt, settings);
+      recordLlmCall({ prompt, response, startedAt, ok: true, kind: "oauth", component: options.component, settings, config });
+      return response;
+    }
+
+    const openai = createApiClient(settings, config);
+    const { text } = await generateText({
+      model: openai(getChatModel(settings, config)),
+      prompt,
+      temperature: 0.3,
+    });
+    response = text;
+    recordLlmCall({ prompt, response, startedAt, ok: true, kind: "text", component: options.component, settings, config });
+    return text;
+  } catch (error) {
+    recordLlmCall({
+      prompt,
+      response,
+      startedAt,
+      ok: false,
+      kind: settings?.authMode === "oauth" ? "oauth" : "text",
+      component: options.component,
+      settings,
+      config,
+      error,
+      errorRaw: response || errorToMessage(error),
+    });
+    throw error;
+  }
 }
 
 export function extractJSONFromText(text: string): string {
@@ -243,36 +269,81 @@ export async function llmGenerateJSON<T>(
 ): Promise<T> {
   const settings = options.settings ?? loadSettings();
   const config = options.config ?? loadConfig();
+  const startedAt = Date.now();
+  const schemaName = options.schemaName ?? inferSchemaName(schema);
+  let response = "";
 
-  if (settings?.authMode === "oauth") {
-    const text = await generateWithOAuth(prompt, settings);
-    const jsonStr = extractJSONFromText(text);
-    return schema.parse(parseJSONWithRecovery(jsonStr));
-  }
+  try {
+    if (settings?.authMode === "oauth") {
+      response = await generateWithOAuth(prompt, settings);
+      const jsonStr = extractJSONFromText(response);
+      const parsed = schema.parse(parseJSONWithRecovery(jsonStr));
+      recordLlmCall({
+        prompt,
+        response,
+        startedAt,
+        ok: true,
+        kind: "oauth",
+        schema: schemaName,
+        component: options.component,
+        settings,
+        config,
+      });
+      return parsed;
+    }
 
-  const openai = createApiClient(settings, config);
+    const openai = createApiClient(settings, config);
 
-  // When the top-level schema is an array, some providers return {items:[...]}
-  // which causes validation errors. Use generateText + manual JSON parse as a
-  // reliable fallback for array schemas.
-  if (schema instanceof z.ZodArray) {
-    const { text } = await generateText({
+    // When the top-level schema is an array, some providers return {items:[...]}
+    // which causes validation errors. Use generateText + manual JSON parse as a
+    // reliable fallback for array schemas.
+    if (schema instanceof z.ZodArray) {
+      const { text } = await generateText({
+        model: openai(getChatModel(settings, config)),
+        prompt,
+        temperature: 0.3,
+      });
+      response = text;
+      const jsonStr = extractJSONFromText(text);
+      const parsed = parseJSONWithRecovery(jsonStr);
+      const normalized = normalizeArrayResponse(parsed);
+      const result = schema.parse(normalized) as T;
+      recordLlmCall({ prompt, response, startedAt, ok: true, kind: "json", schema: schemaName, component: options.component, settings, config });
+      return result;
+    }
+
+    const { object } = await generateObject({
       model: openai(getChatModel(settings, config)),
       prompt,
+      schema,
       temperature: 0.3,
     });
-    const jsonStr = extractJSONFromText(text);
-    const parsed = parseJSONWithRecovery(jsonStr);
-    const normalized = normalizeArrayResponse(parsed);
-    return schema.parse(normalized) as T;
+
+    response = JSON.stringify(object);
+    recordLlmCall({ prompt, response, startedAt, ok: true, kind: "json", schema: schemaName, component: options.component, settings, config });
+    return object;
+  } catch (error) {
+    recordLlmCall({
+      prompt,
+      response,
+      startedAt,
+      ok: false,
+      kind: settings?.authMode === "oauth" ? "oauth" : "json",
+      schema: schemaName,
+      component: options.component,
+      settings,
+      config,
+      error,
+      errorRaw: response || errorToMessage(error),
+    });
+    throw error;
   }
+}
 
-  const { object } = await generateObject({
-    model: openai(getChatModel(settings, config)),
-    prompt,
-    schema,
-    temperature: 0.3,
-  });
+function inferSchemaName(schema: z.ZodType<unknown>) {
+  return schema.description || schema.constructor.name;
+}
 
-  return object;
+function errorToMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }

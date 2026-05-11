@@ -8,6 +8,9 @@ import { DebouncedWatcher } from "./fs-watcher";
 import { shouldProcess, sessionHash, fileHash } from "./state";
 import type { ParsedSession } from "../types";
 import type { RuntimeIPC } from "../ipc/runtime";
+import { getLogger } from "../logger";
+
+const logger = getLogger("watcher");
 
 export class WatcherOrchestrator {
   private watcher?: DebouncedWatcher;
@@ -37,7 +40,7 @@ export class WatcherOrchestrator {
   }
 
   start() {
-    console.log("[watcher] Starting file watchers...");
+    logger.info("Starting file watchers...");
     const watcher = this.ensureWatcher();
 
     // Watch Codex sessions
@@ -65,11 +68,11 @@ export class WatcherOrchestrator {
       if (path.endsWith(".jsonl")) this.handleFile("openclaw", path);
     });
 
-    console.log("[watcher] All watchers active.");
+    logger.info("All watchers active.");
   }
 
   async backfillAll() {
-    console.log("[backfill] Scanning historical sessions...");
+    logger.info("Scanning historical sessions...", { component: "backfill" });
 
     for (const source of this.fileSourceConfigs) {
       await this.backfillFileSource(source.parserName, source.root, source.extension);
@@ -78,7 +81,7 @@ export class WatcherOrchestrator {
     await this.backfillOpenCode(this.cfg.sources.opencode);
     await this.pollAmp();
 
-    console.log("[backfill] Historical scan complete.");
+    logger.info("Historical scan complete.", { component: "backfill" });
   }
 
   /** Periodically poll Amp threads (no fs watch available) */
@@ -110,13 +113,13 @@ export class WatcherOrchestrator {
       const parser = this.parserRegistry[parserName];
       if (!parser) return;
 
-      console.log(`[watcher] New/changed: ${filePath} (${parserName})`);
+      logger.info("New/changed file", { filePath, parserName });
       const session = await parser.parse(filePath);
       if (!session) return;
 
       await this.handleSession(session, filePath, fileHash(filePath));
     } catch (err) {
-      console.error(`[watcher] Error processing ${filePath}:`, err);
+      logger.error("Error processing file", { filePath, error: formatError(err) });
       this.recordError(parserName, err);
     } finally {
       this.processing.delete(filePath);
@@ -161,7 +164,7 @@ export class WatcherOrchestrator {
         await this.processQueuedSession(session, `opencode:${session.id}`, sessionHash(session), "opencode");
       }
     } catch (err) {
-      console.error(`[watcher] Error processing ${dbPath}:`, err);
+      logger.error("Error processing OpenCode database", { dbPath, error: formatError(err) });
     } finally {
       this.processing.delete(processingKey);
     }
@@ -171,7 +174,7 @@ export class WatcherOrchestrator {
     try {
       await this.handleSession(session, key, hash);
     } catch (err) {
-      console.error(`[watcher] Error processing ${key}:`, err);
+      logger.error("Error processing queued session", { key, error: formatError(err) });
       this.recordError(source, err);
     }
   }
@@ -181,10 +184,10 @@ export class WatcherOrchestrator {
       return;
     }
 
-    const result = await processSession(session, this.storage, this.wiki, console.log, hash);
+    const result = await processSession(session, this.storage, this.wiki, (message) => logger.info(message), hash);
     if (result.warnings?.length) {
       for (const warning of result.warnings) {
-        console.warn("[watcher] ⚠ " + warning);
+        logger.warn(warning);
       }
     }
     await this.storage.recordProcessedSession(result.memories, key, hash, session.id);
@@ -211,6 +214,7 @@ export class WatcherOrchestrator {
       lastSessionId: session.id,
       lastSource: session.source,
       lastMemoryCount: memoryCount,
+      lastError: undefined,
     });
     this.runtime.emit({
       kind: skipped ? "session-skipped" : "session-processed",
@@ -242,6 +246,10 @@ export class WatcherOrchestrator {
       details: message,
     });
   }
+}
+
+function formatError(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function listFilesRecursively(root: string, extension: string): string[] {

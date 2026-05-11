@@ -1,11 +1,13 @@
 import { watch, type FSWatcher } from "fs";
 import { loadConfig } from "../config";
+import { getLogger } from "../logger";
 
 export type FileChangeHandler = (path: string) => void;
 
 export class DebouncedWatcher {
   private watchers: FSWatcher[] = [];
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private logger = getLogger("watcher");
 
   constructor(private debounceMs = loadConfig().watchDebounceMs) {}
 
@@ -27,7 +29,7 @@ export class DebouncedWatcher {
       });
       this.watchers.push(watcher);
     } catch (err) {
-      console.error(`[watcher] Cannot watch ${dir}:`, err);
+      this.logger.error("Cannot watch directory", { dir, error: err instanceof Error ? err.message : String(err) });
     }
   }
 

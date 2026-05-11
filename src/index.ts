@@ -2,31 +2,35 @@ import { mkdirSync } from "fs";
 import { createApp } from "./app";
 import { WatcherOrchestrator } from "./watcher";
 import { prepareRuntime } from "./migration";
+import { getLogger } from "./logger";
+
+const logger = getLogger("bootstrap");
 
 export async function runDaemon() {
   prepareRuntime();
-  console.log("Mnemonic starting...");
+  logger.info("Mnemonic starting...");
 
   const { config, storage, wiki, ipc } = createApp();
 
   mkdirSync(config.dataDir, { recursive: true });
   mkdirSync(config.vault, { recursive: true });
   mkdirSync(config.ipcDir, { recursive: true });
+  mkdirSync(config.logsDir, { recursive: true });
 
   ipc.reset();
   ipc.writeStatus({ state: "starting", message: "Initializing storage and wiki." });
 
   await storage.init();
-  console.log("✓ Storage initialized");
-  console.log("✓ Wiki engine initialized");
+  logger.info("Storage initialized");
+  logger.info("Wiki engine initialized");
   ipc.writeStatus({ state: "backfill", message: "Scanning historical sessions." });
 
   const watcher = new WatcherOrchestrator(storage, wiki, ipc);
   await watcher.backfillAll();
-  console.log("✓ Historical session scan complete");
+  logger.info("Historical session scan complete");
 
   watcher.start();
-  console.log("✓ File watchers active");
+  logger.info("File watchers active");
   ipc.writeStatus({ state: "watching", message: "Watching for session updates." });
 
   let ampTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -41,7 +45,7 @@ export async function runDaemon() {
     try {
       await watcher.pollAmp();
     } catch (err) {
-      console.error("[amp-poll]", err);
+      logger.error("Amp poll failed", { error: err instanceof Error ? err.message : String(err) });
     } finally {
       if (!shuttingDown) {
         ampTimeout = setTimeout(scheduleAmpPoll, 5 * 60 * 1000);
@@ -56,7 +60,7 @@ export async function runDaemon() {
 
   const shutdown = () => {
     shuttingDown = true;
-    console.log("\nMnemonic shutting down...");
+    logger.info("Mnemonic shutting down...");
     if (ampTimeout) {
       clearTimeout(ampTimeout);
     }
@@ -72,12 +76,12 @@ export async function runDaemon() {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  console.log("Mnemonic running. Press Ctrl+C to stop.");
+  logger.info("Mnemonic running. Press Ctrl+C to stop.");
 }
 
 if (import.meta.main) {
   runDaemon().catch((err) => {
-    console.error("Fatal:", err);
+    logger.error("Fatal", { error: err instanceof Error ? err.message : String(err) });
     process.exit(1);
   });
 }

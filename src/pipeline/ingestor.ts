@@ -4,6 +4,7 @@ import { llmGenerateJSON } from "../llm";
 import { ingestPrompt } from "../llm/prompts";
 import { RawMemorySchema } from "../llm/schemas";
 import type { Storage } from "../storage";
+import { getLogger } from "../logger";
 import { batchPairwiseSimilarity } from "./similarity";
 import { inferProjectFromText, normalizeProjectName } from "./project";
 import { calibrateSalience } from "./salience";
@@ -13,6 +14,7 @@ const HIGH_CONFIDENCE_TITLE_THRESHOLD = 0.85;
 const CROSS_PROJECT_TITLE_THRESHOLD = 0.95;
 const CROSS_LAYER_LINK_THRESHOLD = 0.92;
 const EMBEDDING_ONLY_DUPLICATE_THRESHOLD = 0.88;
+const logger = getLogger("pipeline.ingestor");
 
 export async function ingest(
   session: ParsedSession,
@@ -25,7 +27,10 @@ export async function ingest(
     dedupDropped?: number;
   },
 ): Promise<Memory[]> {
-  const rawMemories = await llmGenerateJSON(ingestPrompt(session), RawMemorySchema);
+  const rawMemories = await llmGenerateJSON(ingestPrompt(session), RawMemorySchema, {
+    component: "ingestor",
+    schemaName: "RawMemorySchema",
+  });
   if (metrics) {
     metrics.ingestedRaw = rawMemories.length;
   }
@@ -72,7 +77,7 @@ export async function ingest(
   try {
     relatedByMemory = await storage.findRelatedMemoriesBatch(calibrated, { limit: 15 });
   } catch (error) {
-    console.warn(`[ingestor] related memory lookup failed: ${formatError(error)}`);
+    logger.warn("related memory lookup failed", { error: formatError(error) });
     relatedByMemory = calibrated.map(() => []);
   }
 
@@ -85,7 +90,7 @@ export async function ingest(
   const deduplicated = calibrated.flatMap((memory, index) => {
     const decision = decisions[index];
     if (decision?.status === "rejected") {
-      console.warn(`[ingestor] duplicate detection failed for ${memory.id}: ${formatError(decision.reason)}`);
+      logger.warn("duplicate detection failed", { memoryId: memory.id, error: formatError(decision.reason) });
     }
     const duplicate = decision?.status === "fulfilled" ? decision.value.duplicate : null;
     const linkedMemoryIds = decision?.status === "fulfilled" ? decision.value.linkedMemoryIds : [];
