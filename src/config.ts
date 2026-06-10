@@ -28,6 +28,7 @@ export interface Config {
   logConsole: boolean;
   watchDebounceMs: number;
   maxSessionAgeDays: number;
+  automaticDeduplicateSessionInterval: number;
   vectorBackend: "sqlite" | "lancedb";
   llmModel: string;
   openaiApiKey: string;
@@ -72,6 +73,7 @@ export function loadConfig(input: LoadConfigInput = {}): Config {
     logConsole: parseBoolean(env.MNEMONIC_LOG_CONSOLE, true),
     watchDebounceMs: 2000,
     maxSessionAgeDays: 7,
+    automaticDeduplicateSessionInterval: parsePositiveInteger(env.MNEMONIC_DEDUPLICATE_SESSION_INTERVAL, 25),
     vectorBackend: env.MNEMONIC_VECTOR_BACKEND === "sqlite" ? "sqlite" : "lancedb",
     llmModel: env.LLM_MODEL ?? "gpt-4.1-mini",
     openaiApiKey: env.OPENAI_API_KEY ?? "",

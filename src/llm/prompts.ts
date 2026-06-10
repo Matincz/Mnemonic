@@ -547,6 +547,7 @@ Rules:
 - return [] if there is no real pattern
 - prefer insights triggered by repeated evidence, contradictions, or stable engineering lessons
 - do not restate a single episodic event as an insight
+- insight candidates must have cross-context generalization value and salience generally >= 0.5; weaker observations belong in episodic or semantic memory
 - Use historical context to detect patterns that span multiple sessions.
 - only emit an insight when it is supported by at least 2 memories from different source sessions, or by the current batch plus historical context from another session
 - do not elevate one-off sensor readings, recurring cron/sync success logs, or single-operation outcomes into insights

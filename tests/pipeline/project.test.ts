@@ -10,6 +10,16 @@ describe("project inference", () => {
     expect(inferProjectFromText("Touched /Users/x/Desktop/Foo/src/index.ts during the fix")).toBe("Foo");
   });
 
+  it("infers project from workspace and repository paths with normalized names", () => {
+    expect(inferProjectFromText("cwd: /Users/x/Documents/Codex/2026-06-10/sub-store-workers")).toBe("sub-store-workers");
+    expect(inferProjectFromText("git root: /Users/x/Projects/Mnemonic/.git")).toBe("Mnemonic");
+  });
+
+  it("normalizes path-like explicit projects to their repository basename", () => {
+    expect(normalizeProjectName("/Users/x/Desktop/Mnemonic")).toBe("Mnemonic");
+    expect(normalizeProjectName("/Users/x/Desktop/Mnemonic/.git")).toBe("Mnemonic");
+  });
+
   it("falls back to general when no path or repo clue exists", () => {
     expect(inferProjectFromText("Discussed a general workflow without repository context")).toBe("general");
   });

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { invalidateEmbeddingCache } from "../../src/embeddings/index";
+import { loadConfig } from "../../src/config";
 import { Storage } from "../../src/storage";
 import type { VectorStore } from "../../src/storage/vector";
 import type { Memory } from "../../src/types";
@@ -160,6 +161,47 @@ describe("weekly maintenance", () => {
     expect(storage.getMemory("old-low-episodic")).toBeNull();
     expect(storage.getMemory("linked-low-episodic")).not.toBeNull();
     expect(storage.getMemory("old-proposed")?.salience).toBeCloseTo(0.5, 6);
+    storage.close();
+  });
+
+  it("runs corpus deduplication after the configured processed-session interval", async () => {
+    const root = join(tmpdir(), `mnemonic-maint-cadence-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    tempRoots.push(root);
+    mkdirSync(root, { recursive: true });
+    process.env.MEMORY_AGENT_SETTINGS_PATH = join(root, "settings.json");
+    invalidateEmbeddingCache();
+
+    const storage = new Storage({
+      config: {
+        ...loadConfig(),
+        automaticDeduplicateSessionInterval: 2,
+      },
+      dbPath: join(root, "memory.db"),
+      vaultPath: join(root, "vault"),
+      vectorStore: createVectorStoreStub(),
+    });
+    await storage.init();
+
+    await storage.recordProcessedSession([
+      makeMemory("dupe-1", {
+        title: "Telegram architecture",
+        summary: "Telegram routing uses the same webhook and proxy lifecycle.",
+        tags: ["telegram"],
+      }),
+    ], "session-1.jsonl", "hash-1", "session-1");
+    expect(storage.listAll()).toHaveLength(1);
+
+    await storage.recordProcessedSession([
+      makeMemory("dupe-2", {
+        title: "Telegram architecture and health checks",
+        summary: "Telegram routing uses the same webhook and proxy lifecycle with health checks.",
+        tags: ["telegram"],
+        sourceSessionIds: ["session-2"],
+      }),
+    ], "session-2.jsonl", "hash-2", "session-2");
+
+    expect(storage.listAll()).toHaveLength(1);
+    expect(storage.db.getMeta("processedSessionsSinceDeduplicate")).toBe("0");
     storage.close();
   });
 });

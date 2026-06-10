@@ -55,6 +55,7 @@ function makeConfig(logsDir: string): Config {
     logConsole: false,
     watchDebounceMs: 2000,
     maxSessionAgeDays: 7,
+    automaticDeduplicateSessionInterval: 25,
     vectorBackend: "sqlite",
     llmModel: "fallback-model",
     openaiApiKey: "",
