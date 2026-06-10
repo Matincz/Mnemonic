@@ -1,5 +1,7 @@
 import type { Memory } from "../types";
 
+export const MIN_INSIGHT_SALIENCE = 0.45;
+
 export function normalize(memories: Memory[]): Memory[] {
   let result = memories;
 
@@ -15,6 +17,10 @@ export function normalize(memories: Memory[]): Memory[] {
   result = mergeNearDuplicates(result);
 
   result = result.map((memory) => {
+    if (memory.layer === "insight" && memory.salience < MIN_INSIGHT_SALIENCE) {
+      return { ...memory, layer: "semantic" as const };
+    }
+
     if (
       (memory.layer === "semantic" || memory.layer === "procedural") &&
       memory.salience < 0.4 &&

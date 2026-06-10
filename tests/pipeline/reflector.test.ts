@@ -156,4 +156,37 @@ describe("reflect", () => {
 
     expect(results).toHaveLength(0);
   });
+
+  it("drops low-salience insight candidates from reflection output", async () => {
+    llmGenerateJSONMock.mockImplementation(async () => [
+      {
+        title: "Weak preference insight",
+        summary: "A low-confidence preference should not become a durable insight.",
+        details: "The observation is too weak to retain in the insight layer.",
+        tags: ["preference"],
+        salience: 0.3,
+        linked_ids: [],
+      },
+      {
+        title: "Strong operational pattern",
+        summary: "Repeated operational evidence supports a durable cross-session pattern.",
+        details: "The pattern has enough salience to become an insight.",
+        tags: ["operations"],
+        salience: 0.6,
+        linked_ids: [],
+      },
+    ]);
+    const storage = {
+      config: {} as never,
+      listByLayer: () => [],
+      findRelatedMemoriesBatch: mock(async () => [[]]),
+    } as never;
+
+    const { reflect } = await import("../../src/pipeline/reflector");
+    const results = await reflect([makeMemory("m1"), makeMemory("m2", { sourceSessionId: "session-2" })], storage);
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.title).toBe("Strong operational pattern");
+    expect(results[0]?.salience).toBe(0.6);
+  });
 });

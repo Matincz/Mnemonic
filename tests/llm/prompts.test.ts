@@ -156,6 +156,7 @@ describe("prompts", () => {
     expect(prompt).toContain("source_sessions:");
     expect(prompt).toContain("different source sessions");
     expect(prompt).toContain("cron/sync success logs");
+    expect(prompt).toContain("salience generally >= 0.5");
   });
 
   it("includes existing wiki pages for merge-aware updates", () => {

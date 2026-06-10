@@ -1,5 +1,6 @@
 import type { Memory } from "../types";
 import { textSimilarity } from "../pipeline/normalizer";
+import { batchPairwiseSimilarity, type SemanticSimilarityOptions } from "../pipeline/similarity";
 
 interface DeduplicateReport {
   totalBefore: number;
@@ -13,8 +14,21 @@ export interface DeduplicateResult {
   report: DeduplicateReport;
 }
 
-export function deduplicateMemoryCorpus(memories: Memory[]): DeduplicateResult {
+const LEXICAL_DUPLICATE_THRESHOLD = 0.82;
+const TAGGED_DUPLICATE_THRESHOLD = 0.78;
+const TAGGED_SUMMARY_THRESHOLD = 0.55;
+const TITLE_CONTAINMENT_MIN_TOKENS = 2;
+const TITLE_CONTAINMENT_SUMMARY_THRESHOLD = 0.45;
+const TITLE_CONTAINMENT_COMBINED_THRESHOLD = 0.55;
+const SEMANTIC_PRESCREEN_THRESHOLD = 0.35;
+const SEMANTIC_DUPLICATE_THRESHOLD = 0.84;
+
+export async function deduplicateMemoryCorpus(
+  memories: Memory[],
+  options: SemanticSimilarityOptions = {},
+): Promise<DeduplicateResult> {
   const exactTitlePass = mergeGroups(groupByNormalizedTitle(memories));
+  const nearDuplicatePairs = await buildNearDuplicatePairSet(exactTitlePass.memories, options);
   const grouped: Memory[][] = [];
   const consumed = new Set<number>();
 
@@ -33,7 +47,7 @@ export function deduplicateMemoryCorpus(memories: Memory[]): DeduplicateResult {
       }
 
       const candidate = exactTitlePass.memories[candidateIndex]!;
-      if (!isCrossBatchNearDuplicate(seed, candidate)) {
+      if (!nearDuplicatePairs.has(pairKey(index, candidateIndex))) {
         continue;
       }
 
@@ -65,7 +79,7 @@ export function deduplicateExactTitleGroups(memories: Memory[]): DeduplicateResu
 function groupByNormalizedTitle(memories: Memory[]) {
   const groups = new Map<string, Memory[]>();
   for (const memory of memories) {
-    const key = normalizeTitle(memory.title);
+    const key = [memory.layer, memory.project ?? "(none)", normalizeTitle(memory.title)].join("::");
     const group = groups.get(key) ?? [];
     group.push(memory);
     groups.set(key, group);
@@ -186,13 +200,56 @@ function pickHighestStatus(group: Memory[]): Memory["status"] {
     .sort((left, right) => priority[right.status] - priority[left.status])[0]?.status ?? "observed";
 }
 
-function isCrossBatchNearDuplicate(left: Memory, right: Memory) {
+async function buildNearDuplicatePairSet(memories: Memory[], options: SemanticSimilarityOptions) {
+  const pairs = new Set<string>();
+  const semanticCandidates: Array<{ leftIndex: number; rightIndex: number; text: [string, string] }> = [];
+
+  for (let leftIndex = 0; leftIndex < memories.length; leftIndex += 1) {
+    const left = memories[leftIndex]!;
+    for (let rightIndex = leftIndex + 1; rightIndex < memories.length; rightIndex += 1) {
+      const right = memories[rightIndex]!;
+      const lexical = crossBatchLexicalDuplicate(left, right);
+      if (lexical === "duplicate") {
+        pairs.add(pairKey(leftIndex, rightIndex));
+        continue;
+      }
+
+      if (lexical === "candidate") {
+        semanticCandidates.push({
+          leftIndex,
+          rightIndex,
+          text: [semanticDeduplicateText(left), semanticDeduplicateText(right)],
+        });
+      }
+    }
+  }
+
+  if (semanticCandidates.length === 0) {
+    return pairs;
+  }
+
+  const scores = await batchPairwiseSimilarity(semanticCandidates.map((candidate) => candidate.text), options);
+  for (let index = 0; index < semanticCandidates.length; index += 1) {
+    if ((scores[index] ?? 0) >= SEMANTIC_DUPLICATE_THRESHOLD) {
+      const candidate = semanticCandidates[index]!;
+      pairs.add(pairKey(candidate.leftIndex, candidate.rightIndex));
+    }
+  }
+
+  return pairs;
+}
+
+function pairKey(leftIndex: number, rightIndex: number) {
+  return `${leftIndex}:${rightIndex}`;
+}
+
+function crossBatchLexicalDuplicate(left: Memory, right: Memory): "duplicate" | "candidate" | "none" {
   if (left.id === right.id || left.layer !== right.layer) {
-    return false;
+    return "none";
   }
 
   if (left.project && right.project && left.project !== right.project) {
-    return false;
+    return "none";
   }
 
   const titleSimilarity = textSimilarity(left.title, right.title);
@@ -202,11 +259,70 @@ function isCrossBatchNearDuplicate(left: Memory, right: Memory) {
     [right.title, right.summary].join(" "),
   );
 
-  if (titleSimilarity >= 0.82 || combinedSimilarity >= 0.82) {
-    return true;
+  if (titleSimilarity >= LEXICAL_DUPLICATE_THRESHOLD || combinedSimilarity >= LEXICAL_DUPLICATE_THRESHOLD) {
+    return "duplicate";
   }
 
-  return hasTagOverlap(left.tags, right.tags) && combinedSimilarity >= 0.78 && summarySimilarity >= 0.55;
+  if (isTitleContainmentDuplicate(left.title, right.title)) {
+    if (
+      summarySimilarity >= TITLE_CONTAINMENT_SUMMARY_THRESHOLD ||
+      combinedSimilarity >= TITLE_CONTAINMENT_COMBINED_THRESHOLD ||
+      hasTagOverlap(left.tags, right.tags)
+    ) {
+      return "duplicate";
+    }
+  }
+
+  if (
+    hasTagOverlap(left.tags, right.tags) &&
+    combinedSimilarity >= TAGGED_DUPLICATE_THRESHOLD &&
+    summarySimilarity >= TAGGED_SUMMARY_THRESHOLD
+  ) {
+    return "duplicate";
+  }
+
+  if (
+    hasTagOverlap(left.tags, right.tags) &&
+    Math.max(titleSimilarity, summarySimilarity, combinedSimilarity) >= SEMANTIC_PRESCREEN_THRESHOLD
+  ) {
+    return "candidate";
+  }
+
+  return "none";
+}
+
+function isTitleContainmentDuplicate(left: string, right: string) {
+  const leftTokens = titleTokens(left);
+  const rightTokens = titleTokens(right);
+  const smaller = leftTokens.size <= rightTokens.size ? leftTokens : rightTokens;
+  const larger = leftTokens.size <= rightTokens.size ? rightTokens : leftTokens;
+
+  if (smaller.size < TITLE_CONTAINMENT_MIN_TOKENS) {
+    return false;
+  }
+
+  for (const token of smaller) {
+    if (!larger.has(token)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function titleTokens(title: string) {
+  const stopWords = new Set(["a", "an", "and", "for", "in", "of", "on", "the", "to", "with"]);
+  return new Set(
+    title
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, " ")
+      .split(/\s+/)
+      .filter((token) => token.length > 1 && !stopWords.has(token)),
+  );
+}
+
+function semanticDeduplicateText(memory: Memory) {
+  return [memory.title, memory.summary, memory.details].filter(Boolean).join("\n");
 }
 
 function hasTagOverlap(left: string[], right: string[]) {

@@ -43,6 +43,7 @@ const PROPOSED_DECAY_AGE_DAYS = 60;
 const PROPOSED_DECAY_AMOUNT = 0.2;
 const MAINTENANCE_META_KEY = "lastMaintenanceAt";
 const MAINTENANCE_CHECK_META_KEY = "lastMaintenanceCheckAt";
+const DEDUPLICATE_SESSION_COUNT_META_KEY = "processedSessionsSinceDeduplicate";
 
 export class Storage {
   readonly db: MemoryDB;
@@ -150,6 +151,7 @@ export class Storage {
     });
     await this.materializeMemories(memories);
     this.db.markFileProcessed(path, hash, sessionId);
+    await this.runAutomaticDeduplicateIfDue();
     await this.runWeeklyMaintenanceIfDue();
   }
 
@@ -386,7 +388,7 @@ export class Storage {
       log(`Pruned ${prunedCount} low-salience episodic memories (salience < ${pruneThreshold}, age > ${pruneAgeDays}d)`);
     }
 
-    const deduplicated = deduplicateMemoryCorpus(pruned);
+    const deduplicated = await deduplicateMemoryCorpus(pruned, { storage: this });
 
     if (prunedCount > 0 || deduplicated.report.removed > 0) {
       this.db.withTransaction(() => {
@@ -426,6 +428,46 @@ export class Storage {
         `salienceRecalibrated=${recalibration.updated}`,
         ...result.details,
       ],
+    };
+  }
+
+  async runAutomaticDeduplicateIfDue(log: (message: string) => void = () => {}) {
+    await this.ensureInitialized();
+    const interval = this.config.automaticDeduplicateSessionInterval;
+    if (!Number.isInteger(interval) || interval <= 0) {
+      return {
+        checked: true,
+        performed: false,
+        processedSinceDeduplicate: 0,
+        removed: 0,
+        mergedGroups: 0,
+        reason: "disabled" as const,
+      };
+    }
+
+    const previous = Number(this.db.getMeta(DEDUPLICATE_SESSION_COUNT_META_KEY) ?? "0");
+    const processedSinceDeduplicate = (Number.isFinite(previous) ? previous : 0) + 1;
+    if (processedSinceDeduplicate < interval) {
+      this.db.setMeta(DEDUPLICATE_SESSION_COUNT_META_KEY, String(processedSinceDeduplicate));
+      return {
+        checked: true,
+        performed: false,
+        processedSinceDeduplicate,
+        removed: 0,
+        mergedGroups: 0,
+        reason: "interval-not-due" as const,
+      };
+    }
+
+    const result = await this.deduplicateCorpus(log);
+    this.db.setMeta(DEDUPLICATE_SESSION_COUNT_META_KEY, "0");
+    return {
+      checked: true,
+      performed: true,
+      processedSinceDeduplicate: 0,
+      removed: result.report.removed,
+      mergedGroups: result.report.mergedGroups,
+      reason: "executed" as const,
     };
   }
 
@@ -595,6 +637,23 @@ export class Storage {
     }
 
     return changed;
+  }
+
+  private async deduplicateCorpus(log: (message: string) => void = () => {}) {
+    const currentMemories = this.listAll();
+    const deduplicated = await deduplicateMemoryCorpus(currentMemories, { storage: this });
+    if (deduplicated.report.removed > 0) {
+      this.db.withTransaction(() => {
+        this.db.replaceAllMemories(deduplicated.memories);
+      });
+      await this.vectorStore.reset();
+      this.vault.resetGeneratedMemoryViews();
+      await this.materializeMemories(deduplicated.memories);
+      log(
+        `Deduplicated memories: removed=${deduplicated.report.removed} mergedGroups=${deduplicated.report.mergedGroups}`,
+      );
+    }
+    return deduplicated;
   }
 
   private refreshViews() {

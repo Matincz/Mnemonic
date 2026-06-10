@@ -5,6 +5,7 @@ import { reflectPrompt } from "../llm/prompts";
 import { RawInsightSchema } from "../llm/schemas";
 import { semanticSimilarity } from "./similarity";
 import type { Storage } from "../storage";
+import { MIN_INSIGHT_SALIENCE } from "./normalizer";
 
 interface RawInsight {
   title: string;
@@ -38,6 +39,10 @@ export async function reflect(memories: Memory[], storage: Storage): Promise<Mem
   const results: Memory[] = [];
 
   for (const insight of insights) {
+    if (insight.salience < MIN_INSIGHT_SALIENCE) {
+      continue;
+    }
+
     const isDuplicate = await hasInsightDuplicate(recentInsights, insight, storage);
     if (isDuplicate) continue;
 

@@ -108,6 +108,28 @@ describe("normalizer", () => {
     expect(result.find((memory) => memory.id === "2")?.layer).toBe("procedural");
   });
 
+  it("downgrades low-salience insights instead of preserving noisy top-layer memories", () => {
+    const result = normalize([
+      makeMemory("1", {
+        layer: "insight",
+        salience: 0.44,
+        title: "Direct answer preference",
+        summary: "The user may prefer direct answers in a single low-confidence observation.",
+        details: "A one-off observation should not be promoted into the durable insight layer without stronger salience.",
+      }),
+      makeMemory("2", {
+        layer: "insight",
+        salience: 0.45,
+        title: "Stable debugging pattern",
+        summary: "Repeated failures indicate the same durable debugging pattern across sessions.",
+        details: "This high-enough salience insight should remain at the insight layer.",
+      }),
+    ]);
+
+    expect(result.find((memory) => memory.id === "1")?.layer).toBe("semantic");
+    expect(result.find((memory) => memory.id === "2")?.layer).toBe("insight");
+  });
+
   it("preserves good memories unchanged", () => {
     const good = makeMemory("1", {
       layer: "semantic",
