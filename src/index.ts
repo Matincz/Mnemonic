@@ -1,10 +1,44 @@
-import { mkdirSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { join } from "path";
 import { createApp } from "./app";
 import { WatcherOrchestrator } from "./watcher";
 import { prepareRuntime } from "./migration";
 import { getLogger } from "./logger";
 
 const logger = getLogger("bootstrap");
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM means the process exists but we can't signal it (still alive).
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function acquirePidLock(pidPath: string): () => void {
+  if (existsSync(pidPath)) {
+    const raw = readFileSync(pidPath, "utf8").trim();
+    const existing = Number.parseInt(raw, 10);
+    if (Number.isFinite(existing) && existing !== process.pid && isProcessAlive(existing)) {
+      throw new Error(`Mnemonic is already running (PID ${existing}). Lock file: ${pidPath}`);
+    }
+    // Stale lock — overwrite below.
+  }
+
+  writeFileSync(pidPath, String(process.pid));
+  return () => {
+    try {
+      const raw = readFileSync(pidPath, "utf8").trim();
+      if (Number.parseInt(raw, 10) === process.pid) {
+        unlinkSync(pidPath);
+      }
+    } catch {
+      // Already gone or unreadable — nothing to clean up.
+    }
+  };
+}
 
 export async function runDaemon() {
   prepareRuntime();
@@ -16,6 +50,18 @@ export async function runDaemon() {
   mkdirSync(config.vault, { recursive: true });
   mkdirSync(config.ipcDir, { recursive: true });
   mkdirSync(config.logsDir, { recursive: true });
+
+  const pidPath = join(config.dataDir, "mnemonic.pid");
+  let releasePidLock: () => void;
+  try {
+    releasePidLock = acquirePidLock(pidPath);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error(msg);
+    ipc.writeStatus({ state: "error", message: msg, lastError: msg });
+    process.exit(1);
+  }
+  process.on("exit", () => releasePidLock());
 
   ipc.reset();
   ipc.writeStatus({ state: "starting", message: "Initializing storage and wiki." });
