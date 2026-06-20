@@ -30,7 +30,7 @@ import { combinedQueryPrompt } from "./llm/prompts";
 import { renderMemoryGraph, type GraphFormat } from "./graph";
 import { WatcherOrchestrator } from "./watcher";
 import { repairWikiLinks } from "./wiki/repair";
-import { summarizeMetrics } from "./pipeline/metrics";
+import { auditCorpusQuality, summarizeMetrics } from "./pipeline/metrics";
 import { globalSalienceRecalibration } from "./pipeline/salience-normalize";
 
 export type ParsedCliCommand =
@@ -41,6 +41,7 @@ export type ParsedCliCommand =
   | { name: "status" }
   | { name: "stats" }
   | { name: "metrics"; sinceDays: number }
+  | { name: "quality-audit" }
   | { name: "logs"; options: LogsOptions }
   | { name: "recalibrate" }
   | { name: "backfill"; reset: boolean }
@@ -85,6 +86,7 @@ export function parseCliArgs(args: string[]): ParsedCliCommand {
   if (head === "status") return { name: "status" };
   if (head === "stats") return { name: "stats" };
   if (head === "metrics") return { name: "metrics", sinceDays: parseSinceDays(args) };
+  if (head === "quality-audit") return { name: "quality-audit" };
   if (head === "logs") return { name: "logs", options: parseLogsOptions(args.slice(1)) };
   if (head === "recalibrate") return { name: "recalibrate" };
   if (head === "backfill") return { name: "backfill", reset: args.includes("--reset") };
@@ -131,6 +133,7 @@ Usage:
   mnemonic status                 Show daemon and memory store status
   mnemonic stats                  Show memory statistics by layer/project/agent
   mnemonic metrics --since 7d     Show recent pipeline quality metrics
+  mnemonic quality-audit          Recompute v5 quality metrics from the live memory DB and vault
   mnemonic logs [opts]            Show recent logs
   mnemonic recalibrate            Rebalance global salience percentiles
   mnemonic backfill [--reset]     Re-process all watched sessions (--reset clears first)
@@ -260,6 +263,28 @@ projectCoverage: ${summary.projectCoverage.toFixed(3)}
 duplicateTitleGroups: ${summary.duplicateTitleGroups}
 topDedupProjects:
 ${formatDedupProjects(summary.topDedupProjects)}`);
+
+  storage.close();
+}
+
+async function printQualityAudit() {
+  const { storage } = createApp();
+  await storage.init();
+  const audit = auditCorpusQuality(storage);
+
+  console.log(`Mnemonic quality audit
+sqlitePath: ${audit.sqlitePath}
+vaultPath: ${audit.vaultPath}
+totalMemories: ${audit.totalMemories}
+verifiedRatio: ${audit.verifiedRatio.toFixed(3)} (target >= 0.100)
+supersededCount: ${audit.supersededCount} (target > 0)
+contradictsMemoryRatio: ${audit.contradictsMemoryRatio.toFixed(3)} (target >= 0.100)
+contradictsLinkCount: ${audit.contradictsLinkCount}
+multiSourceRatio: ${audit.multiSourceRatio.toFixed(3)} (target >= 0.250)
+projectCoverage: ${audit.projectCoverage.toFixed(3)} (target >= 0.950)
+duplicateTitleGroups: ${audit.duplicateTitleGroups} (target < 30)
+vaultMemoryFiles: ${audit.vaultMemoryFiles}
+vaultCoverage: ${audit.vaultCoverage.toFixed(3)}`);
 
   storage.close();
 }
@@ -967,6 +992,9 @@ export async function runCli(args = process.argv.slice(2)) {
       return;
     case "metrics":
       await printMetrics(command.sinceDays);
+      return;
+    case "quality-audit":
+      await printQualityAudit();
       return;
     case "logs":
       await printLogs(command.options);

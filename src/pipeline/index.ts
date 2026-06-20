@@ -14,7 +14,7 @@ import { consolidate } from "./consolidator";
 import { reflect } from "./reflector";
 import { wikiIngest } from "./wiki-ingestor";
 import { propagateVerificationSignals } from "./status-updater";
-import { recordMetrics, salienceDistribution, type PipelineMetrics } from "./metrics";
+import { countDuplicateTitleGroups, recordMetrics, salienceDistribution, type PipelineMetrics } from "./metrics";
 import { appendStructuredLog, getLogger } from "../logger";
 
 export interface WikiDeps {
@@ -339,19 +339,6 @@ function populateCorpusMetrics(metrics: PipelineMetrics, storage: Storage, pendi
   metrics.multiSourceRatio = memories.filter((memory) => (memory.sourceSessionIds ?? []).length > 1).length / total;
   metrics.projectCoverage = memories.filter((memory) => Boolean(memory.project)).length / total;
   metrics.duplicateTitleGroups = countDuplicateTitleGroups(memories);
-}
-
-function countDuplicateTitleGroups(memories: Memory[]) {
-  const counts = new Map<string, number>();
-  for (const memory of memories) {
-    const title = memory.title.trim().toLowerCase();
-    if (!title) {
-      continue;
-    }
-    counts.set(title, (counts.get(title) ?? 0) + 1);
-  }
-
-  return [...counts.values()].filter((count) => count > 1).length;
 }
 
 async function runStage<T>(

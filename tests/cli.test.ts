@@ -72,6 +72,14 @@ describe("cli parsing", () => {
     });
   });
 
+  it("parses quality-audit command", async () => {
+    const { parseCliArgs } = await import("../src/cli");
+
+    expect(parseCliArgs(["quality-audit"])).toEqual({
+      name: "quality-audit",
+    });
+  });
+
   it("parses logs command", async () => {
     const { parseCliArgs } = await import("../src/cli");
 
@@ -389,6 +397,92 @@ describe("cli parsing", () => {
     expect(output).toContain("verifiedRatio: 0.500");
     expect(output).toContain("contradictsAdded: 2");
     expect(output).toContain("- proj-a:");
+  });
+
+  it("prints live corpus quality audit output", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "mnemonic-quality-audit-cli-"));
+    const dataRoot = join(tempDir, "data-root");
+    const configRoot = join(tempDir, "config-root");
+    mkdirSync(join(dataRoot, "data"), { recursive: true });
+    mkdirSync(configRoot, { recursive: true });
+    process.env.MNEMONIC_DATA_ROOT = dataRoot;
+    process.env.MNEMONIC_CONFIG_ROOT = configRoot;
+    process.env.MNEMONIC_VECTOR_BACKEND = "sqlite";
+
+    const { Storage } = await import("../src/storage");
+    const storage = new Storage();
+    await storage.init();
+    await storage.saveMemories([
+      {
+        id: "mem-audit-1",
+        layer: "semantic",
+        title: "Duplicate audit",
+        summary: "Audit summary",
+        details: "Audit details",
+        tags: ["audit"],
+        project: "proj-audit",
+        sourceSessionId: "sess-audit-1",
+        sourceAgent: "codex",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        status: "verified",
+        sourceSessionIds: ["sess-audit-1", "sess-audit-2"],
+        supportingMemoryIds: [],
+        salience: 0.9,
+        linkedMemoryIds: [],
+        contradicts: [],
+      },
+      {
+        id: "mem-audit-2",
+        layer: "semantic",
+        title: "Duplicate audit",
+        summary: "Audit summary",
+        details: "Audit details",
+        tags: ["audit"],
+        project: undefined,
+        sourceSessionId: "sess-audit-3",
+        sourceAgent: "codex",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        status: "superseded",
+        sourceSessionIds: ["sess-audit-3"],
+        supportingMemoryIds: [],
+        salience: 0.4,
+        linkedMemoryIds: [],
+        contradicts: ["mem-audit-1"],
+      },
+    ]);
+    storage.close();
+
+    const { runCli } = await import("../src/cli");
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (message?: unknown) => {
+      logs.push(String(message ?? ""));
+    };
+
+    try {
+      await runCli(["quality-audit"]);
+    } finally {
+      console.log = originalLog;
+      delete process.env.MNEMONIC_DATA_ROOT;
+      delete process.env.MNEMONIC_CONFIG_ROOT;
+      delete process.env.MNEMONIC_VECTOR_BACKEND;
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+
+    const output = logs.join("\n");
+    expect(output).toContain("Mnemonic quality audit");
+    expect(output).toContain("sqlitePath:");
+    expect(output).toContain("vaultPath:");
+    expect(output).toContain("totalMemories: 2");
+    expect(output).toContain("verifiedRatio: 0.500 (target >= 0.100)");
+    expect(output).toContain("supersededCount: 1 (target > 0)");
+    expect(output).toContain("contradictsMemoryRatio: 0.500 (target >= 0.100)");
+    expect(output).toContain("multiSourceRatio: 0.500 (target >= 0.250)");
+    expect(output).toContain("projectCoverage: 0.500 (target >= 0.950)");
+    expect(output).toContain("duplicateTitleGroups: 1 (target < 30)");
+    expect(output).toContain("vaultCoverage: 1.000");
   });
 
   it("resets generated data without deleting settings", async () => {

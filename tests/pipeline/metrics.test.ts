@@ -3,7 +3,8 @@ import { mkdirSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { Storage } from "../../src/storage";
-import { recordMetrics, summarizeMetrics, type PipelineMetrics } from "../../src/pipeline/metrics";
+import { auditCorpusQuality, recordMetrics, summarizeMetrics, type PipelineMetrics } from "../../src/pipeline/metrics";
+import type { Memory } from "../../src/types";
 
 const tempRoots: string[] = [];
 
@@ -62,6 +63,29 @@ function metric(sessionId: string, overrides: Partial<PipelineMetrics> = {}): Pi
   };
 }
 
+function memory(id: string, overrides: Partial<Memory> = {}): Memory {
+  return {
+    id,
+    layer: "semantic",
+    title: `Memory ${id}`,
+    summary: `Summary ${id}`,
+    details: `Details ${id}`,
+    tags: [],
+    project: "proj-a",
+    sourceSessionId: `session-${id}`,
+    sourceAgent: "codex",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    status: "observed",
+    sourceSessionIds: [`session-${id}`],
+    supportingMemoryIds: [],
+    salience: 0.5,
+    linkedMemoryIds: [],
+    contradicts: [],
+    ...overrides,
+  };
+}
+
 describe("pipeline metrics", () => {
   it("writes metrics and summarizes recent aggregates", async () => {
     const storage = makeStorage();
@@ -81,6 +105,35 @@ describe("pipeline metrics", () => {
     expect(summary.duplicateTitleGroups).toBe(1);
     expect(summary.salienceDistribution.p50).toBe(0.6);
     expect(summary.topDedupProjects[0]?.project).toBe("proj-b");
+
+    storage.close();
+  });
+
+  it("audits corpus quality directly from stored memories and vault files", async () => {
+    const storage = makeStorage();
+    await storage.init();
+    const memories = [
+      memory("mem-1", { title: "Duplicate title", status: "verified", sourceSessionIds: ["s1", "s2"] }),
+      memory("mem-2", { title: "Duplicate title", status: "superseded", project: undefined, contradicts: ["mem-3"] }),
+      memory("mem-3", { title: "Unique title", project: "general" }),
+    ];
+    for (const item of memories) {
+      storage.db.upsertMemory(item);
+      storage.vault.writeMemory(item);
+    }
+
+    const audit = auditCorpusQuality(storage);
+
+    expect(audit.totalMemories).toBe(3);
+    expect(audit.verifiedRatio).toBeCloseTo(1 / 3, 6);
+    expect(audit.supersededCount).toBe(1);
+    expect(audit.contradictsMemoryRatio).toBeCloseTo(1 / 3, 6);
+    expect(audit.contradictsLinkCount).toBe(1);
+    expect(audit.multiSourceRatio).toBeCloseTo(1 / 3, 6);
+    expect(audit.projectCoverage).toBeCloseTo(2 / 3, 6);
+    expect(audit.duplicateTitleGroups).toBe(1);
+    expect(audit.vaultMemoryFiles).toBe(3);
+    expect(audit.vaultCoverage).toBe(1);
 
     storage.close();
   });
