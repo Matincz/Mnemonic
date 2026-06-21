@@ -140,6 +140,49 @@ describe("cli parsing", () => {
     });
   });
 
+  it("parses recall command with json and cwd", async () => {
+    const { parseCliArgs } = await import("../src/cli");
+
+    expect(parseCliArgs(["recall", "--json", "--cwd", "/Users/me/Desktop/proj-a", "auth", "refresh"])).toEqual({
+      name: "recall",
+      task: "auth refresh",
+      cwd: "/Users/me/Desktop/proj-a",
+      format: "json",
+    });
+  });
+
+  it("parses integrate command for all agents", async () => {
+    const { parseCliArgs } = await import("../src/cli");
+
+    expect(parseCliArgs(["integrate", "all", "--cwd", "/Users/me/Desktop/proj-a"])).toEqual({
+      name: "integrate",
+      agent: "all",
+      cwd: "/Users/me/Desktop/proj-a",
+      dryRun: false,
+    });
+  });
+
+  it("parses integrate dry run command", async () => {
+    const { parseCliArgs } = await import("../src/cli");
+
+    expect(parseCliArgs(["integrate", "claude", "--dry-run"])).toEqual({
+      name: "integrate",
+      agent: "claude",
+      cwd: undefined,
+      dryRun: true,
+    });
+  });
+
+  it("parses integrate verify command", async () => {
+    const { parseCliArgs } = await import("../src/cli");
+
+    expect(parseCliArgs(["integrate", "verify", "--cwd", "/Users/me/Desktop/proj-a"])).toEqual({
+      name: "integrate-verify",
+      agent: "all",
+      cwd: "/Users/me/Desktop/proj-a",
+    });
+  });
+
   it("prints auth status with current oauth fields", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "mnemonic-cli-"));
     const settingsPath = join(tempDir, "settings.json");
@@ -334,6 +377,71 @@ describe("cli parsing", () => {
     expect(output).toContain("- proj-a: 2");
     expect(output).toContain("- codex: 1");
     expect(output).toContain("- claude-code: 1");
+  });
+
+  it("prints recall context as json for agent hooks", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "mnemonic-recall-cli-"));
+    const dataRoot = join(tempDir, "data-root");
+    const configRoot = join(tempDir, "config-root");
+    mkdirSync(join(dataRoot, "data"), { recursive: true });
+    mkdirSync(configRoot, { recursive: true });
+    process.env.MNEMONIC_DATA_ROOT = dataRoot;
+    process.env.MNEMONIC_CONFIG_ROOT = configRoot;
+    process.env.MNEMONIC_VECTOR_BACKEND = "sqlite";
+
+    const { Storage } = await import("../src/storage");
+    const storage = new Storage();
+    await storage.init();
+    await storage.saveMemories([
+      {
+        id: "mem-recall-auth",
+        layer: "procedural",
+        title: "Auth refresh fix",
+        summary: "Refresh auth tokens before retrying failed API calls.",
+        details: "Use the existing auth refresh helper before repeating the request.",
+        tags: ["auth", "retry"],
+        project: "proj-a",
+        sourceSessionId: "sess-recall",
+        sourceAgent: "codex",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        status: "verified",
+        sourceSessionIds: ["sess-recall"],
+        supportingMemoryIds: [],
+        salience: 0.9,
+        linkedMemoryIds: [],
+        contradicts: [],
+      },
+    ]);
+    storage.close();
+
+    const { runCli } = await import("../src/cli");
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (message?: unknown) => {
+      logs.push(String(message ?? ""));
+    };
+
+    try {
+      await runCli(["recall", "--json", "--cwd", "/Users/me/Desktop/proj-a", "auth", "retry"]);
+    } finally {
+      console.log = originalLog;
+      delete process.env.MNEMONIC_DATA_ROOT;
+      delete process.env.MNEMONIC_CONFIG_ROOT;
+      delete process.env.MNEMONIC_VECTOR_BACKEND;
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+
+    const output = JSON.parse(logs.join("\n")) as {
+      context: string;
+      memories: Array<{ id: string; whyIncluded: string[] }>;
+      project?: string;
+    };
+    expect(output.project).toBe("proj-a");
+    expect(output.memories[0]?.id).toBe("mem-recall-auth");
+    expect(output.memories[0]?.whyIncluded).toContain("project");
+    expect(output.context).toContain("Relevant memory:");
+    expect(output.context).toContain("Auth refresh fix");
   });
 
   it("prints pipeline metrics output", async () => {

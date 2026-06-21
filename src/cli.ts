@@ -32,6 +32,8 @@ import { WatcherOrchestrator } from "./watcher";
 import { repairWikiLinks } from "./wiki/repair";
 import { auditCorpusQuality, summarizeMetrics } from "./pipeline/metrics";
 import { globalSalienceRecalibration } from "./pipeline/salience-normalize";
+import { buildRecallCapsule } from "./recall";
+import { applyAgentIntegration, verifyAgentIntegration, type AgentIntegration } from "./integrations";
 
 export type ParsedCliCommand =
   | { name: "start" }
@@ -53,6 +55,9 @@ export type ParsedCliCommand =
   | { name: "graph"; format: GraphFormat; outputPath?: string }
   | { name: "search"; query: string }
   | { name: "query"; question: string }
+  | { name: "recall"; task: string; cwd?: string; format: "json" | "text" }
+  | { name: "integrate"; agent: AgentIntegration; cwd?: string; dryRun: boolean }
+  | { name: "integrate-verify"; agent: AgentIntegration; cwd?: string }
   | { name: "prune"; dryRun: boolean }
   | { name: "doctor" }
   | { name: "auth-status" }
@@ -110,6 +115,8 @@ export function parseCliArgs(args: string[]): ParsedCliCommand {
   }
   if (head === "search" && tail) return { name: "search", query: tail };
   if (head === "query" && tail) return { name: "query", question: tail };
+  if (head === "recall") return parseRecallCommand(args.slice(1));
+  if (head === "integrate") return parseIntegrateCommand(args.slice(1));
   if (head === "prune") return { name: "prune", dryRun: args.includes("--dry-run") };
   if (head === "doctor") return { name: "doctor" };
   if (head === "auth" && second === "status") return { name: "auth-status" };
@@ -120,6 +127,82 @@ export function parseCliArgs(args: string[]): ParsedCliCommand {
   if (head === "auth" && second === "logout" && third === "openai") return { name: "auth-logout-openai" };
 
   return { name: "unknown", input: args.join(" ").trim() };
+}
+
+function parseRecallCommand(args: string[]): ParsedCliCommand {
+  let cwd: string | undefined;
+  let format: "json" | "text" = "text";
+  const taskParts: string[] = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === "--json") {
+      format = "json";
+      continue;
+    }
+    if (arg === "--cwd") {
+      cwd = args[index + 1];
+      index += 1;
+      continue;
+    }
+    taskParts.push(arg);
+  }
+
+  const task = taskParts.join(" ").trim();
+  if (!task) {
+    return { name: "unknown", input: ["recall", ...args].join(" ").trim() };
+  }
+
+  return { name: "recall", task, cwd, format };
+}
+
+function parseIntegrateCommand(args: string[]): ParsedCliCommand {
+  const [agentArg = "all"] = args;
+  if (agentArg === "verify") {
+    return parseIntegrateVerifyCommand(args.slice(1));
+  }
+  if (!isAgentIntegration(agentArg)) {
+    return { name: "unknown", input: ["integrate", ...args].join(" ").trim() };
+  }
+
+  let cwd: string | undefined;
+  let dryRun = false;
+  for (let index = 1; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === "--dry-run") {
+      dryRun = true;
+      continue;
+    }
+    if (arg === "--cwd") {
+      cwd = args[index + 1];
+      index += 1;
+    }
+  }
+
+  return { name: "integrate", agent: agentArg, cwd, dryRun };
+}
+
+function parseIntegrateVerifyCommand(args: string[]): ParsedCliCommand {
+  let agent: AgentIntegration = "all";
+  let cwd: string | undefined;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === "--cwd") {
+      cwd = args[index + 1];
+      index += 1;
+      continue;
+    }
+    if (isAgentIntegration(arg)) {
+      agent = arg;
+    }
+  }
+
+  return { name: "integrate-verify", agent, cwd };
+}
+
+function isAgentIntegration(value: string): value is AgentIntegration {
+  return value === "codex" || value === "claude" || value === "gemini" || value === "all";
 }
 
 function printHelp() {
@@ -146,6 +229,10 @@ Usage:
   mnemonic graph [fmt] [out]       Export memory relation graph (mermaid/dot/json)
   mnemonic search <query>         Search memories by text and embeddings
   mnemonic query <question>       Ask a natural-language question
+  mnemonic recall [--json] [--cwd path] <task>
+                                  Return compact context for agent hooks
+  mnemonic integrate <agent|all>  Install recall instructions into AGENTS.md / CLAUDE.md / GEMINI.md
+  mnemonic integrate verify       Verify local agent recall instructions
   mnemonic doctor                 Check system health and configuration
   mnemonic auth status            Show current authentication info
   mnemonic auth list              List configured auth providers
@@ -421,6 +508,35 @@ async function runQuery(question: string) {
     }
   }
   storage.close();
+}
+
+async function runRecall(task: string, cwd: string | undefined, format: "json" | "text") {
+  const { storage } = createApp();
+  const capsule = await buildRecallCapsule(storage, { task, cwd });
+  if (format === "json") {
+    console.log(JSON.stringify(capsule, null, 2));
+  } else {
+    console.log(capsule.context);
+    console.log(`Confidence: ${capsule.confidence}`);
+  }
+  storage.close();
+}
+
+function runIntegrate(agent: AgentIntegration, cwd: string | undefined, dryRun: boolean) {
+  const root = cwd ?? process.cwd();
+  const results = applyAgentIntegration(root, agent, { dryRun });
+  for (const result of results) {
+    console.log(`${result.action}: ${result.filePath}`);
+  }
+}
+
+function runIntegrateVerify(agent: AgentIntegration, cwd: string | undefined) {
+  const root = cwd ?? process.cwd();
+  const results = verifyAgentIntegration(root, agent);
+  for (const result of results) {
+    const status = result.installed ? "ok" : `missing (${result.issues.join(",")})`;
+    console.log(`${status}: ${result.filePath}`);
+  }
 }
 
 async function runReindex() {
@@ -1031,6 +1147,15 @@ export async function runCli(args = process.argv.slice(2)) {
       return;
     case "query":
       await runQuery(command.question);
+      return;
+    case "recall":
+      await runRecall(command.task, command.cwd, command.format);
+      return;
+    case "integrate":
+      runIntegrate(command.agent, command.cwd, command.dryRun);
+      return;
+    case "integrate-verify":
+      runIntegrateVerify(command.agent, command.cwd);
       return;
     case "doctor":
       await printDoctor();

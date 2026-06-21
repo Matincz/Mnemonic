@@ -45,6 +45,26 @@ db.close();
 mnemonic query "What have we learned about auth refresh flow?"
 ```
 
+### Recall compact context for agent hooks
+Use this before planning, editing, debugging, or final reporting when an agent needs quiet, project-scoped context:
+```bash
+mnemonic recall --json --cwd "$PWD" "fix auth retry failure"
+```
+
+`recall` is intentionally smaller and lower-noise than `query`: it returns a context capsule plus source ids for automatic injection into an agent prompt.
+
+### Install recall instructions for local agents
+```bash
+mnemonic integrate all --cwd "$PWD"
+```
+
+This writes or updates marked Mnemonic blocks in `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` so Codex, Claude Code, and Gemini know when to call `mnemonic recall`.
+
+Verify the local agent files afterward:
+```bash
+mnemonic integrate verify --cwd "$PWD"
+```
+
 ### Rebuild embeddings and dashboards
 ```bash
 mnemonic reindex

@@ -106,6 +106,9 @@ Common CLI commands (`mnemonic <command>`):
 | `metrics --since 7d` | Recent pipeline quality metrics |
 | `search <query>` | Search memories by text + embeddings |
 | `query <question>` | Ask a natural-language question |
+| `recall --json --cwd <path> <task>` | Return compact context for agent hooks |
+| `integrate all --cwd <path>` | Install recall instructions for Codex, Claude, and Gemini |
+| `integrate verify --cwd <path>` | Verify local agent recall instructions are installed |
 | `backfill [--reset]` | Re-process all watched sessions |
 | `reindex` | Rebuild the vector embedding index |
 | `optimize` | Maintenance sweep + dedup + vector optimize |
@@ -114,6 +117,30 @@ Common CLI commands (`mnemonic <command>`):
 | `graph [fmt] [out]` | Export the memory relation graph |
 | `paths` | Show all data/config file paths |
 | `auth status` / `auth openai api-key` | Manage authentication |
+
+### Agent recall integration
+
+Use `mnemonic integrate all --cwd <repo>` to install marked Mnemonic Recall
+blocks into `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md`. These blocks instruct
+Codex, Claude Code, and Gemini to recall compact project context before
+planning, editing, debugging, or final reporting.
+
+The generated instructions try the global `mnemonic` binary first and fall back
+to the repository CLI:
+
+```bash
+if command -v mnemonic >/dev/null 2>&1; then
+  mnemonic recall --json --cwd "$PWD" "<current user task or failure text>"
+else
+  bun run src/cli.ts recall --json --cwd "$PWD" "<current user task or failure text>"
+fi
+```
+
+Run `mnemonic integrate verify --cwd <repo>` afterward to confirm the local
+agent instruction files contain the recall block, command fallback, and Memory
+Context injection rule. This path has been verified with a fresh Codex session:
+the session read `AGENTS.md`, executed the fallback recall command successfully,
+and reported all three integration files as `ok`.
 
 ### Authentication
 
@@ -263,6 +290,9 @@ bun run tui          # 启动交互式终端界面
 | `metrics --since 7d` | 近期管道质量指标 |
 | `search <query>` | 按文本 + 向量检索记忆 |
 | `query <question>` | 自然语言提问 |
+| `recall --json --cwd <path> <task>` | 为 Agent hook 返回低噪声上下文 |
+| `integrate all --cwd <path>` | 为 Codex、Claude、Gemini 安装 recall 指令 |
+| `integrate verify --cwd <path>` | 验证本地 Agent recall 指令已安装 |
 | `backfill [--reset]` | 重新处理所有已监听会话 |
 | `reindex` | 重建向量嵌入索引 |
 | `optimize` | 维护扫描 + 去重 + 向量优化 |
@@ -271,6 +301,28 @@ bun run tui          # 启动交互式终端界面
 | `graph [fmt] [out]` | 导出记忆关系图 |
 | `paths` | 显示所有数据/配置路径 |
 | `auth status` / `auth openai api-key` | 管理认证 |
+
+### Agent recall 接入
+
+使用 `mnemonic integrate all --cwd <repo>` 将带标记的 Mnemonic Recall 区块
+写入 `AGENTS.md`、`CLAUDE.md` 和 `GEMINI.md`。这些区块会要求 Codex、
+Claude Code 和 Gemini 在计划、编辑、调试或最终汇报前先召回当前项目的精简上下文。
+
+生成的指令会先尝试全局 `mnemonic` 命令；如果当前 agent 会话的 PATH 里没有该命令，
+则回退到仓库内 CLI：
+
+```bash
+if command -v mnemonic >/dev/null 2>&1; then
+  mnemonic recall --json --cwd "$PWD" "<current user task or failure text>"
+else
+  bun run src/cli.ts recall --json --cwd "$PWD" "<current user task or failure text>"
+fi
+```
+
+之后运行 `mnemonic integrate verify --cwd <repo>`，确认本地 agent 指令文件包含
+recall 区块、fallback 命令和 Memory Context 注入规则。该路径已经用新的 Codex
+会话实测：会话读取了 `AGENTS.md`，成功执行 fallback recall 命令，并报告三份接入
+文件均为 `ok`。
 
 ### 认证
 
