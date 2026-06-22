@@ -1,5 +1,6 @@
 import { loadConfig, type Config } from "../config";
 import { embedTexts, hasEmbeddingProvider } from "../embeddings";
+import { loadSettings } from "../settings";
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { MemoryDB } from "./sqlite";
@@ -545,7 +546,8 @@ export class Storage {
   }
 
   private async indexMemories(memories: Memory[]) {
-    if (!hasEmbeddingProvider(undefined, this.config)) {
+    const settings = loadSettings();
+    if (!hasEmbeddingProvider(settings, this.config)) {
       return 0;
     }
 
@@ -554,7 +556,7 @@ export class Storage {
       text: [memory.title, memory.summary, memory.details].filter(Boolean).join("\n"),
     }));
 
-    const vectors = await embedTexts(payloads.map((item) => item.text), { config: this.config });
+    const vectors = await embedTexts(payloads.map((item) => item.text), { settings, config: this.config });
     for (const [index, payload] of payloads.entries()) {
       const vector = vectors[index];
       if (!vector) {

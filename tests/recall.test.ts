@@ -147,4 +147,26 @@ describe("agent recall capsule", () => {
 
     storage.close();
   });
+
+  it("uses fast text recall by default for hook latency", async () => {
+    const storage = await createStorage();
+    await storage.saveMemories([
+      makeMemory("fast-auth", {
+        title: "Auth retry flow",
+        summary: "Refresh auth tokens before retrying failed API calls.",
+        details: "Use the existing auth refresh helper before repeating the request.",
+        project: "proj-a",
+      }),
+    ]);
+
+    const capsule = await buildRecallCapsule(storage, {
+      task: "auth retry",
+      cwd: "/Users/me/Desktop/proj-a",
+    });
+
+    expect(capsule.memories.map((memory) => memory.id)).toEqual(["fast-auth"]);
+    expect(capsule.memories[0]?.reasons).toEqual(["keyword"]);
+
+    storage.close();
+  });
 });

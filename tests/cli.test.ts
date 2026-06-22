@@ -183,6 +183,19 @@ describe("cli parsing", () => {
     });
   });
 
+  it("parses recall-audit command", async () => {
+    const { parseCliArgs } = await import("../src/cli");
+
+    expect(parseCliArgs(["recall-audit", "--cwd", "/Users/me/Desktop/proj-a", "--iterations", "3", "--max-ms", "200", "auth", "retry"])).toEqual({
+      name: "recall-audit",
+      cwd: "/Users/me/Desktop/proj-a",
+      task: "auth retry",
+      iterations: 3,
+      maxRecallMs: 200,
+      format: "text",
+    });
+  });
+
   it("prints auth status with current oauth fields", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "mnemonic-cli-"));
     const settingsPath = join(tempDir, "settings.json");

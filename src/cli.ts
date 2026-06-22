@@ -33,6 +33,7 @@ import { repairWikiLinks } from "./wiki/repair";
 import { auditCorpusQuality, summarizeMetrics } from "./pipeline/metrics";
 import { globalSalienceRecalibration } from "./pipeline/salience-normalize";
 import { buildRecallCapsule } from "./recall";
+import { runAgentRecallAudit } from "./recall-audit";
 import { applyAgentIntegration, verifyAgentIntegration, type AgentIntegration } from "./integrations";
 
 export type ParsedCliCommand =
@@ -56,6 +57,7 @@ export type ParsedCliCommand =
   | { name: "search"; query: string }
   | { name: "query"; question: string }
   | { name: "recall"; task: string; cwd?: string; format: "json" | "text" }
+  | { name: "recall-audit"; task: string; cwd?: string; iterations: number; maxRecallMs: number; format: "json" | "text" }
   | { name: "integrate"; agent: AgentIntegration; cwd?: string; dryRun: boolean }
   | { name: "integrate-verify"; agent: AgentIntegration; cwd?: string }
   | { name: "prune"; dryRun: boolean }
@@ -116,6 +118,7 @@ export function parseCliArgs(args: string[]): ParsedCliCommand {
   if (head === "search" && tail) return { name: "search", query: tail };
   if (head === "query" && tail) return { name: "query", question: tail };
   if (head === "recall") return parseRecallCommand(args.slice(1));
+  if (head === "recall-audit") return parseRecallAuditCommand(args.slice(1));
   if (head === "integrate") return parseIntegrateCommand(args.slice(1));
   if (head === "prune") return { name: "prune", dryRun: args.includes("--dry-run") };
   if (head === "doctor") return { name: "doctor" };
@@ -127,6 +130,45 @@ export function parseCliArgs(args: string[]): ParsedCliCommand {
   if (head === "auth" && second === "logout" && third === "openai") return { name: "auth-logout-openai" };
 
   return { name: "unknown", input: args.join(" ").trim() };
+}
+
+function parseRecallAuditCommand(args: string[]): ParsedCliCommand {
+  let cwd: string | undefined;
+  let format: "json" | "text" = "text";
+  let iterations = 3;
+  let maxRecallMs = 500;
+  const taskParts: string[] = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === "--json") {
+      format = "json";
+      continue;
+    }
+    if (arg === "--cwd") {
+      cwd = args[index + 1];
+      index += 1;
+      continue;
+    }
+    if (arg === "--iterations") {
+      iterations = parsePositiveInteger(args[index + 1], iterations);
+      index += 1;
+      continue;
+    }
+    if (arg === "--max-ms") {
+      maxRecallMs = parseNumber(args[index + 1], maxRecallMs);
+      index += 1;
+      continue;
+    }
+    taskParts.push(arg);
+  }
+
+  const task = taskParts.join(" ").trim();
+  if (!task) {
+    return { name: "unknown", input: ["recall-audit", ...args].join(" ").trim() };
+  }
+
+  return { name: "recall-audit", task, cwd, iterations, maxRecallMs, format };
 }
 
 function parseRecallCommand(args: string[]): ParsedCliCommand {
@@ -231,6 +273,8 @@ Usage:
   mnemonic query <question>       Ask a natural-language question
   mnemonic recall [--json] [--cwd path] <task>
                                   Return compact context for agent hooks
+  mnemonic recall-audit [--cwd path] [--iterations n] [--max-ms n] <task>
+                                  Verify agent hook install and repeated fast recall latency
   mnemonic integrate <agent|all>  Install recall instructions into AGENTS.md / CLAUDE.md / GEMINI.md
   mnemonic integrate verify       Verify local agent recall instructions
   mnemonic doctor                 Check system health and configuration
@@ -520,6 +564,46 @@ async function runRecall(task: string, cwd: string | undefined, format: "json" |
     console.log(`Confidence: ${capsule.confidence}`);
   }
   storage.close();
+}
+
+async function runRecallAudit(
+  task: string,
+  cwd: string | undefined,
+  iterations: number,
+  maxRecallMs: number,
+  format: "json" | "text",
+) {
+  const { storage } = createApp();
+  const root = cwd ?? process.cwd();
+  const result = await runAgentRecallAudit(storage, { root, cwd: root, task, iterations, maxRecallMs });
+
+  if (format === "json") {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(`Mnemonic recall audit: ${result.ok ? "ok" : "failed"}`);
+    console.log(`root: ${result.root}`);
+    console.log(`task: ${result.task}`);
+    console.log(`maxRecallMs: ${result.maxRecallMs}`);
+    console.log("integration:");
+    for (const item of result.integration) {
+      console.log(`- ${item.agent}: ${item.installed ? "ok" : item.issues.join(",")}`);
+    }
+    console.log("iterations:");
+    for (const item of result.iterations) {
+      console.log(`- ${item.index}: recall=${item.recall.ok ? "ok" : "failed"} durationMs=${item.recall.durationMs.toFixed(3)} confidence=${item.recall.confidence} memories=${item.recall.memoryCount}`);
+    }
+    if (result.issues.length > 0) {
+      console.log("issues:");
+      for (const issue of result.issues) {
+        console.log(`- ${issue}`);
+      }
+    }
+  }
+
+  storage.close();
+  if (!result.ok) {
+    process.exitCode = 1;
+  }
 }
 
 function runIntegrate(agent: AgentIntegration, cwd: string | undefined, dryRun: boolean) {
@@ -892,6 +976,16 @@ function parseSinceDays(args: string[]) {
   return Math.max(1, Number(match[1]));
 }
 
+function parsePositiveInteger(raw: string | undefined, fallback: number) {
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseNumber(raw: string | undefined, fallback: number) {
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function parseLogsOptions(args: string[]): LogsOptions {
   const options: LogsOptions = {
     lines: 100,
@@ -1150,6 +1244,9 @@ export async function runCli(args = process.argv.slice(2)) {
       return;
     case "recall":
       await runRecall(command.task, command.cwd, command.format);
+      return;
+    case "recall-audit":
+      await runRecallAudit(command.task, command.cwd, command.iterations, command.maxRecallMs, command.format);
       return;
     case "integrate":
       runIntegrate(command.agent, command.cwd, command.dryRun);

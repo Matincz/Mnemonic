@@ -65,6 +65,13 @@ Verify the local agent files afterward:
 mnemonic integrate verify --cwd "$PWD"
 ```
 
+Run the readiness loop when changing recall or hooks:
+```bash
+mnemonic recall-audit --cwd "$PWD" --iterations 3 --max-ms 500 "fix auth retry failure"
+```
+
+`recall-audit` verifies the Codex, Claude, and Gemini instruction files, then repeatedly runs fast recall under the latency budget. Treat any reported issue as a blocker before relying on automatic agent injection.
+
 ### Rebuild embeddings and dashboards
 ```bash
 mnemonic reindex

@@ -6,6 +6,7 @@ export interface RecallOptions {
   task: string;
   cwd?: string;
   limit?: number;
+  mode?: "fast" | "hybrid";
 }
 
 export interface RecallMemory {
@@ -50,12 +51,15 @@ export async function buildRecallCapsule(storage: Storage, options: RecallOption
   const task = options.task.trim();
   const project = inferRecallProject(options.cwd);
   const limit = options.limit ?? DEFAULT_LIMIT;
+  const mode = options.mode ?? "fast";
 
   if (!task) {
     return emptyCapsule(task, options.cwd, project);
   }
 
-  const results = await storage.search(task, Math.max(limit * 4, 20));
+  const results = mode === "hybrid"
+    ? await storage.search(task, Math.max(limit * 4, 20))
+    : fastRecallSearch(storage, task, limit);
   const memories = results
     .filter((result) => shouldInclude(result.memory, project))
     .sort(compareRecallHits)
@@ -70,6 +74,20 @@ export async function buildRecallCapsule(storage: Storage, options: RecallOption
     context: renderRecallContext(memories),
     memories,
   };
+}
+
+function fastRecallSearch(storage: Storage, task: string, limit: number): MemorySearchResult[] {
+  const textMatches = storage.searchText(task, Math.max(limit * 4, 20));
+  return textMatches.map((memory, index) => ({
+    memory,
+    score: textRecallScore(memory, index, limit),
+    reasons: ["keyword"],
+  }));
+}
+
+function textRecallScore(memory: Memory, index: number, limit: number) {
+  const rankScore = Math.max(0.1, 1 - index / Math.max(limit * 3, 12));
+  return rankScore + effectiveSalience(memory) * 0.05;
 }
 
 function inferRecallProject(cwd?: string) {

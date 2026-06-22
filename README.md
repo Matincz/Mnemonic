@@ -107,6 +107,7 @@ Common CLI commands (`mnemonic <command>`):
 | `search <query>` | Search memories by text + embeddings |
 | `query <question>` | Ask a natural-language question |
 | `recall --json --cwd <path> <task>` | Return compact context for agent hooks |
+| `recall-audit --cwd <path> <task>` | Verify agent hook install and repeated recall latency |
 | `integrate all --cwd <path>` | Install recall instructions for Codex, Claude, and Gemini |
 | `integrate verify --cwd <path>` | Verify local agent recall instructions are installed |
 | `backfill [--reset]` | Re-process all watched sessions |
@@ -141,6 +142,12 @@ agent instruction files contain the recall block, command fallback, and Memory
 Context injection rule. This path has been verified with a fresh Codex session:
 the session read `AGENTS.md`, executed the fallback recall command successfully,
 and reported all three integration files as `ok`.
+
+Use `mnemonic recall-audit --cwd <repo> --iterations 3 --max-ms 500 "<task>"`
+as a repeatable loop for agent readiness. It verifies the Codex, Claude, and
+Gemini instruction files, then runs fast text recall several times and fails if
+any hook file is missing or recall exceeds the latency budget. Automatic agent
+hooks use the fast path by default so they do not block on vector embeddings.
 
 ### Authentication
 
@@ -291,6 +298,7 @@ bun run tui          # 启动交互式终端界面
 | `search <query>` | 按文本 + 向量检索记忆 |
 | `query <question>` | 自然语言提问 |
 | `recall --json --cwd <path> <task>` | 为 Agent hook 返回低噪声上下文 |
+| `recall-audit --cwd <path> <task>` | 验证 Agent hook 安装和多轮 recall 延迟 |
 | `integrate all --cwd <path>` | 为 Codex、Claude、Gemini 安装 recall 指令 |
 | `integrate verify --cwd <path>` | 验证本地 Agent recall 指令已安装 |
 | `backfill [--reset]` | 重新处理所有已监听会话 |
@@ -323,6 +331,11 @@ fi
 recall 区块、fallback 命令和 Memory Context 注入规则。该路径已经用新的 Codex
 会话实测：会话读取了 `AGENTS.md`，成功执行 fallback recall 命令，并报告三份接入
 文件均为 `ok`。
+
+使用 `mnemonic recall-audit --cwd <repo> --iterations 3 --max-ms 500 "<task>"`
+可以作为可重复的 readiness loop。它会验证 Codex、Claude、Gemini 的指令文件，
+然后多次执行 fast text recall；只要 hook 文件缺失或 recall 超出延迟预算就失败。
+自动 agent hook 默认走 fast path，因此不会被向量 embedding 后端阻塞。
 
 ### 认证
 
