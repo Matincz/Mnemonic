@@ -12,6 +12,9 @@ export interface EmbeddingOptions {
 }
 
 let cachedHasProvider: boolean | null = null;
+const rateLimitCooldownUntil = new Map<string, number>();
+
+const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 65_000;
 
 function resolveEmbeddingConfig(settings: Settings | null): EmbeddingSettings | null {
   return settings?.embedding ?? null;
@@ -40,12 +43,63 @@ function sanitizeInput(text: string) {
   return text.replace(/\s+/g, " ").trim();
 }
 
+function embeddingKey(embedding: EmbeddingSettings) {
+  return `${embedding.provider}:${embedding.baseURL.replace(/\/+$/, "")}:${embedding.model}`;
+}
+
+function rateLimitCooldownMs() {
+  const configured = Number(process.env.MNEMONIC_EMBEDDING_RATE_LIMIT_COOLDOWN_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_RATE_LIMIT_COOLDOWN_MS;
+}
+
+function retryAfterMs(response: Response) {
+  const retryAfter = response.headers.get("retry-after");
+  if (!retryAfter) {
+    return rateLimitCooldownMs();
+  }
+
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds) && seconds > 0) {
+    return seconds * 1000;
+  }
+
+  const retryAt = Date.parse(retryAfter);
+  if (Number.isFinite(retryAt)) {
+    return Math.max(retryAt - Date.now(), 0);
+  }
+
+  return rateLimitCooldownMs();
+}
+
+function cooldownRemainingMs(embedding: EmbeddingSettings) {
+  const until = rateLimitCooldownUntil.get(embeddingKey(embedding)) ?? 0;
+  const remaining = until - Date.now();
+  if (remaining <= 0) {
+    rateLimitCooldownUntil.delete(embeddingKey(embedding));
+    return 0;
+  }
+  return remaining;
+}
+
+function assertNotCoolingDown(embedding: EmbeddingSettings) {
+  const remaining = cooldownRemainingMs(embedding);
+  if (remaining > 0) {
+    throw new Error(`Embedding provider is cooling down after rate limiting. Retry in ${Math.ceil(remaining / 1000)}s.`);
+  }
+}
+
+function startRateLimitCooldown(embedding: EmbeddingSettings, response: Response) {
+  rateLimitCooldownUntil.set(embeddingKey(embedding), Date.now() + retryAfterMs(response));
+  cachedHasProvider = null;
+}
+
 async function fetchEmbeddings(
   input: string[],
   embedding: EmbeddingSettings,
   settings: Settings | null,
   config: Config,
 ) {
+  assertNotCoolingDown(embedding);
   const url = `${embedding.baseURL.replace(/\/+$/, "")}/embeddings`;
   const response = await fetch(url, {
     method: "POST",
@@ -58,6 +112,9 @@ async function fetchEmbeddings(
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
+    if (response.status === 429 || body.includes("RATE_TOKEN_LIMIT_EXCEEDED")) {
+      startRateLimitCooldown(embedding, response);
+    }
     throw new Error(`Embedding request failed: HTTP ${response.status}${body ? ` ${body}` : ""}`);
   }
 
@@ -87,7 +144,8 @@ export function hasEmbeddingProvider(settings?: Settings | null, _config?: Confi
   }
 
   const resolvedSettings = settings === undefined ? loadSettings() : settings;
-  const result = resolveEmbeddingConfig(resolvedSettings) !== null;
+  const embedding = resolveEmbeddingConfig(resolvedSettings);
+  const result = embedding !== null && cooldownRemainingMs(embedding) === 0;
   if (settings === undefined) {
     cachedHasProvider = result;
   }
@@ -97,6 +155,7 @@ export function hasEmbeddingProvider(settings?: Settings | null, _config?: Confi
 
 export function invalidateEmbeddingCache() {
   cachedHasProvider = null;
+  rateLimitCooldownUntil.clear();
 }
 
 export async function embedTexts(input: string[], options: EmbeddingOptions = {}): Promise<EmbeddingVector[]> {

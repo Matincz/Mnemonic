@@ -2,7 +2,7 @@ import { nanoid } from "nanoid";
 import type { ParsedSession, Memory, MemorySearchResult } from "../types";
 import { llmGenerateJSON } from "../llm";
 import { ingestPrompt } from "../llm/prompts";
-import { RawMemorySchema } from "../llm/schemas";
+import { RawMemorySchema, type RawMemory } from "../llm/schemas";
 import type { Storage } from "../storage";
 import { getLogger } from "../logger";
 import { batchPairwiseSimilarity } from "./similarity";
@@ -27,7 +27,7 @@ export async function ingest(
     dedupDropped?: number;
   },
 ): Promise<Memory[]> {
-  const rawMemories = await llmGenerateJSON(ingestPrompt(session), RawMemorySchema, {
+  const rawMemories = await llmGenerateJSON<RawMemory[]>(ingestPrompt(session), RawMemorySchema, {
     component: "ingestor",
     schemaName: "RawMemorySchema",
   });

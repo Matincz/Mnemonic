@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { BatchLinkResultSchema, LinkResultSchema, WikiOperationSchema } from "../../src/llm/schemas";
+import { BatchLinkResultSchema, LinkResultSchema, RawMemorySchema, WikiOperationSchema } from "../../src/llm/schemas";
 
 describe("Link schemas", () => {
   it("defaults missing link arrays to empty arrays", () => {
@@ -49,5 +49,21 @@ describe("Link schemas", () => {
     expect(parsed[1]?.title).toBe("");
     expect(parsed[1]?.content).toBe("");
     expect(parsed[1]?.reason).toBe("");
+  });
+
+  it("recovers when extraction puts verification status in the layer field", () => {
+    const parsed = RawMemorySchema.parse([
+      {
+        layer: "verified",
+        title: "Boot pool health restored",
+        summary: "The repair completed and verification showed a healthy boot pool.",
+        details: "The session verified the boot pool with a successful scrub and dismissed the stale alert.",
+        tags: ["truenas", "boot-pool"],
+        salience: 0.9,
+      },
+    ]);
+
+    expect(parsed[0]?.layer).toBe("semantic");
+    expect(parsed[0]?.status).toBe("verified");
   });
 });

@@ -264,7 +264,7 @@ export function normalizeArrayResponse(parsed: unknown): unknown[] {
 
 export async function llmGenerateJSON<T>(
   prompt: string,
-  schema: z.ZodType<T>,
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
   options: LlmCallOptions = {},
 ): Promise<T> {
   const settings = options.settings ?? loadSettings();

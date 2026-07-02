@@ -3,6 +3,7 @@ import { z } from "zod";
 const MemoryLayerSchema = z.enum(["episodic", "semantic", "procedural", "insight"]);
 const DurableLayerSchema = z.enum(["semantic", "procedural", "insight"]);
 const WikiPageTypeSchema = z.enum(["entity", "concept", "source", "procedure", "insight"]);
+const MemoryStatusSchema = z.enum(["proposed", "observed", "verified"]);
 
 export const EvalResultSchema = z.object({
   worth_remembering: z.boolean(),
@@ -10,17 +11,36 @@ export const EvalResultSchema = z.object({
   estimated_layers: z.array(MemoryLayerSchema),
 });
 
-export const RawMemorySchema = z.array(
-  z.object({
-    layer: MemoryLayerSchema,
-    title: z.string(),
-    summary: z.string(),
-    details: z.string(),
-    tags: z.array(z.string()),
-    status: z.enum(["proposed", "observed", "verified"]).optional(),
-    salience: z.number(),
-  }),
-);
+const RawMemoryObjectSchema = z.object({
+  layer: MemoryLayerSchema,
+  title: z.string(),
+  summary: z.string(),
+  details: z.string(),
+  tags: z.array(z.string()),
+  status: MemoryStatusSchema.optional(),
+  salience: z.number(),
+});
+type RawMemoryOutput = z.infer<typeof RawMemoryObjectSchema>;
+export type RawMemory = RawMemoryOutput;
+
+const RawMemoryItemSchema: z.ZodType<RawMemoryOutput, z.ZodTypeDef, unknown> = z.preprocess((value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+
+  const record = value as Record<string, unknown>;
+  if (MemoryStatusSchema.safeParse(record.layer).success) {
+    return {
+      ...record,
+      layer: "semantic",
+      status: record.status ?? record.layer,
+    };
+  }
+
+  return value;
+}, RawMemoryObjectSchema);
+
+export const RawMemorySchema: z.ZodType<RawMemoryOutput[], z.ZodTypeDef, unknown> = z.array(RawMemoryItemSchema);
 
 export const LinkResultSchema = z.object({
   linked_ids: z.array(z.string()).default([]),
